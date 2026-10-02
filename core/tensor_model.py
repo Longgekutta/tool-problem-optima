@@ -12,9 +12,9 @@ rigorous 5-dimensional tensor embedding:
   Axis R: Remediation Dynamics (修复动力学与闭环收敛)
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, List, Tuple, Any
+from typing import Dict, List, Any
 import math
 
 

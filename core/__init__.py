@@ -18,7 +18,9 @@ from .pathology_catalog import (
     PathologyEntry,
     CATALOG,
     get_catalog_entry,
-    list_all_entries
+    list_all_entries,
+    list_categories,
+    list_by_category
 )
 
 __all__ = [
@@ -36,5 +38,7 @@ __all__ = [
     "PathologyEntry",
     "CATALOG",
     "get_catalog_entry",
-    "list_all_entries"
+    "list_all_entries",
+    "list_categories",
+    "list_by_category"
 ]

@@ -10,9 +10,9 @@ The ultimate supervisor for AI and Human problem-solving:
   4. Provides formal causal feedback to the solver until convergence is proven.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
-from typing import List, Dict, Optional, Any, Callable
+from typing import List, Dict, Optional, Any
 import time
 
 from .ast_interceptor import audit_source_code, DiagnosticFinding

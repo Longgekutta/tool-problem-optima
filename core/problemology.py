@@ -16,9 +16,9 @@ Universal Defect Invariant:
   Problem = DivergenceTensor(I, S, E, C) != 0
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, Any
 import math
 
 

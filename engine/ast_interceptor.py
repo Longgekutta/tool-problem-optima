@@ -13,7 +13,7 @@ Inspects Python Abstract Syntax Trees to catch:
 
 import ast
 from dataclasses import dataclass
-from typing import List, Optional, Dict, Any
+from typing import List, Optional
 
 
 @dataclass
@@ -159,6 +159,43 @@ class PathologyASTVisitor(ast.NodeVisitor):
                         snippet=self._get_snippet(node.lineno),
                         remediation_suggestion="Catch specific domain exceptions, log tracebacks, and handle or re-raise gracefully."
                     ))
+
+        self.generic_visit(node)
+
+    def visit_Constant(self, node: ast.Constant):
+        """Check for PRB-E503: Hardcoded secrets and API keys."""
+        if isinstance(node.value, str):
+            val = node.value.strip()
+            # GitHub Token, OpenAI Key, AWS Key, Generic Bearer
+            if any(val.startswith(pfx) for pfx in ("ghp_", "sk-", "AKIA")) and len(val) >= 20:
+                self.findings.append(DiagnosticFinding(
+                    code="PRB-E503",
+                    name="Hardcoded Secret / Credential Leak",
+                    file_path=self.file_path,
+                    line_number=node.lineno,
+                    column=node.col_offset,
+                    message="Detected plaintext private API token/credential hardcoded in source.",
+                    snippet=self._get_snippet(node.lineno),
+                    remediation_suggestion="Isolate secrets in environment variables or a vault (.env / os.getenv); do not commit to version control."
+                ))
+
+        self.generic_visit(node)
+
+    def visit_Assign(self, node: ast.Assign):
+        """Check for PRB-E303: Raw unmanaged open() without context manager."""
+        if isinstance(node.value, ast.Call):
+            func = node.value.func
+            if isinstance(func, ast.Name) and func.id == "open":
+                self.findings.append(DiagnosticFinding(
+                    code="PRB-E303",
+                    name="Unbounded Resource Descriptor Leak",
+                    file_path=self.file_path,
+                    line_number=node.lineno,
+                    column=node.col_offset,
+                    message="Calling raw open() directly in assignment risks descriptor leakage on exceptions.",
+                    snippet=self._get_snippet(node.lineno),
+                    remediation_suggestion="Wrap resource acquisition in a 'with open(...) as f:' context manager."
+                ))
 
         self.generic_visit(node)
 

@@ -1,14 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import unittest
-from core.tensor_model import (
-    ProblemTensor,
-    OntologicalAxis,
-    AgencyAxis,
-    AbstractionLayerAxis,
-    ObservabilityAxis,
-    RemediationAxis
-)
 from core.pathology_catalog import get_catalog_entry, list_all_entries
 
 

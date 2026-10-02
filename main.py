@@ -222,6 +222,50 @@ def cmd_proof(args) -> int:
     return 0
 
 
+def cmd_answers(args) -> int:
+    """Renders objective, plain-language answers to the mother machines' capabilities and final form verdict."""
+    data = {
+        "question_1_plain_language_capabilities": {
+            "title": "工业母机家族功能（大白话精准版）",
+            "tools": {
+                "tool-syntax-gate": "【语法防爆门】：在代码运行前用 5 毫秒飞速检查写错标点、漏括号或缩进错误，写错立刻报警，不浪费一分钱算力。",
+                "tool-micro-patcher": "【微创手术刀】：像外科医生动手术一样，只改出错的那两三行代码，坚决不重写整个文件，彻底解决 AI 动辄丢失原代码的毛病。",
+                "tool-git-checkpoint": "【时光倒流仪】：在每次动代码前悄悄拍一张照片存底；一旦改坏了或者测试没过，1 秒钟瞬间倒流回原样，绝不弄脏代码库。",
+                "tool-code-optima": "【代码体检秤】：专门称量代码体积和查病，揪出偷装的无用依赖包、删掉多余代码，拦住超过 4 层嵌套和又臭又长的函数。",
+                "tool-tdd-runner": "【沙箱考场】：把测试关在一个带倒计时的小隔间里自动跑，哪怕代码写出死循环也能强制关停，绝不卡死系统。",
+                "tool-problem-optima": "【疑难杂症专家脑】：把人类和 AI 常犯的 32 种千奇百怪的问题建档查验，用对抗测试戳穿 AI'假装修好'的谎言，监督它直到真修好。",
+                "tool-stack-optima": "【架构地基师】：在建新项目前帮我们比对选型，挑出最省内存、启动最快、维护最省事的编程语言和技术搭配。",
+                "tool-omniscout-radar": "【开源千里眼】：全网自动搜寻最优秀的开源标杆，把全世界最顶级高手的架构设计直接摆到眼前，防止重复造低质轮子。"
+            }
+        },
+        "question_2_final_form_verdict": {
+            "title": "是否已经达到最终形态？（客观辩证科学定论）",
+            "bottom_layer_axioms": "【底层公理与控制协议：敢，已达不可削减的最终形态】由控制论阿什比定律与事务 ACID 证明，'只读诊断室 + 隔离微手术室 + 独立蜕变门禁室'是解决代码改写的最小完备闭环，不可增删任何一环；5 大通用动词 UCFS 与四维张量基底不可削减。",
+            "top_layer_matrix": "【上层特征与对抗场景：不敢，永恒处于自适应开放形态】软件生态的语言、库与攻击模式永远在演进，特征库像病毒库一样持续扩充，保持对扩展开放、对修改关闭。",
+            "slogan": "底层骨架已达最终形态（公理闭环），外层血肉保持终身代谢（自适应进化）。"
+        }
+    }
+
+    if getattr(args, "json", False):
+        print(json.dumps(data, indent=2, ensure_ascii=False))
+        return 0
+
+    print("==========================================================================")
+    print("  🎯 核心问答一：现在这一些工业母机能够做到什么功能？（极简大白话）")
+    print("==========================================================================")
+    for name, desc in data["question_1_plain_language_capabilities"]["tools"].items():
+        print(f"  • {desc}")
+
+    print("\n==========================================================================")
+    print("  🎯 核心问答二：你敢或者有把握这一些东西已经达到最终形态了吗？")
+    print("==========================================================================")
+    print(f"\n1. {data['question_2_final_form_verdict']['bottom_layer_axioms']}")
+    print(f"\n2. {data['question_2_final_form_verdict']['top_layer_matrix']}")
+    print(f"\n💡 结论：{data['question_2_final_form_verdict']['slogan']}")
+    print("==========================================================================")
+    return 0
+
+
 def cmd_panel(args) -> int:
     """Pagoda/BaoTa style interactive numbered CLI menu."""
     while True:
@@ -237,10 +281,11 @@ def cmd_panel(args) -> int:
         print("  7. 查阅全阶缺陷终结数学与理论证明 (Read Theoretical Proof)")
         print("  8. 执行蜕变神谕验证测试套件 (Run Metamorphic Test Suite)")
         print("  9. 清理缓存与编译产物 (Clean Temporary Caches)")
+        print(" 10. 工业母机功能白话与终极形态定论 (Plain Definitions & Ultimate Form Verdict)")
         print("  0. 退出控制台 (Exit)")
         print("=" * 65)
 
-        choice = input("请选择操作序号 [0-9]: ").strip()
+        choice = input("请选择操作序号 [0-10]: ").strip()
         if choice == "0":
             print("👋 退出控制台。")
             break
@@ -269,6 +314,8 @@ def cmd_panel(args) -> int:
             cmd_test(args)
         elif choice == "9":
             cmd_clean(args)
+        elif choice == "10":
+            cmd_answers(args)
         else:
             print("⚠️ 无效输入，请重新选择。")
     return 0
@@ -320,6 +367,12 @@ def build_cli() -> argparse.ArgumentParser:
 
     p_proof = subparsers.add_parser("proof", parents=[parent], help="Display mathematical & theoretical proof")
     p_proof.set_defaults(func=cmd_proof)
+
+    p_answers = subparsers.add_parser("answers", parents=[parent], help="Display plain-language tool definitions & final form verdict")
+    p_answers.set_defaults(func=cmd_answers)
+
+    p_verdict = subparsers.add_parser("verdict", parents=[parent], help="Alias for answers")
+    p_verdict.set_defaults(func=cmd_answers)
 
     p_panel = subparsers.add_parser("panel", parents=[parent], help="Launch interactive numbered panel")
     p_panel.set_defaults(func=cmd_panel)

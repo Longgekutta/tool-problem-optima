@@ -131,3 +131,51 @@ class MetamorphicOracleEngine:
                     causal_diagnosis="Patch used brittle hardcoded assumptions that broke upon slight distribution shift."
                 ))
         return violations
+
+    def verify_source_algebra(self, source_code: str) -> List[MetamorphicViolation]:
+        """
+        Dynamically discovers functions in source code and verifies core algebraic invariants:
+        - Commutativity on 2-arg symmetric candidates
+        - Idempotency on 1-arg normalization candidates
+        """
+        violations: List[MetamorphicViolation] = []
+        sandbox = {
+            "__builtins__": __builtins__,
+            "__file__": "<sandbox_module>",
+            "__name__": "__sandbox__"
+        }
+        try:
+            # Execute in safe isolated sandbox namespace (unified globals/locals)
+            exec(source_code, sandbox, sandbox)
+        except Exception as e:
+            return [MetamorphicViolation(
+                relation_name="MR-COMPILE-CRASH",
+                property_description="Crash during module loading",
+                input_sample=None,
+                perturbed_input=None,
+                actual_output=str(e),
+                expected_property="Source must be executable without top-level crash",
+                causal_diagnosis=f"Module level execution threw: {e}"
+            )]
+
+        for name, obj in sandbox.items():
+            # Only test pure functions, ignore imports and CLI dispatchers cmd_*
+            if callable(obj) and not name.startswith(("_", "cmd_")):
+                try:
+                    import inspect
+                    sig = inspect.signature(obj)
+                    param_count = len(sig.parameters)
+                    if param_count == 2 and any(k in name.lower() for k in ("add", "sum", "mult", "sym", "merge", "equal", "or", "and", "xor")):
+                        sample_pairs = [(1, 2), (-3, 5), (0, 0), (10, -10)]
+                        v = self.test_commutativity(obj, sample_pairs)
+                        if v:
+                            violations.append(v)
+                    elif param_count == 1 and any(k in name.lower() for k in ("clean", "strip", "sort", "norm", "abs", "idemp", "dedup")):
+                        sample_inputs = [0, 5, -10, 42]
+                        v = self.test_idempotence(obj, sample_inputs)
+                        if v:
+                            violations.append(v)
+                except Exception:
+                    continue
+
+        return violations

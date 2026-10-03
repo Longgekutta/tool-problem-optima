@@ -31,18 +31,24 @@ python main.py panel
 # 方式 2: 一键对目标 Python 文件或工程执行全阶病理审计 (毫秒级输出 Miette 精美诊断与张量雷达)
 python main.py audit examples/buggy_sample.py
 
-# 方式 3: 工业母机多工具联邦协同审计 (联动 tool-code-optima / tool-syntax-gate / tool-tdd-runner)
+# 方式 4: 零扫描纳秒级发现并解析 AI 编辑器对话转录本 (Cursor / Antigravity / Windsurf / Cline / Aider)
+python main.py transcript
+
+# 方式 5: 三阶漏斗裁判网格终审 (AST反作弊 5ms + 代数蜕变神谕 50ms + 思维链因果对齐 20ms)
+python main.py judge --target examples/buggy_sample.py
+
+# 方式 6: 双向互检 Dogfooding (对当前活跃对话与最新修改执行终审)
+python main.py dogfood
+
+# 方式 7: 工业母机多工具联邦协同审计 (联动 tool-code-optima / tool-syntax-gate / tool-tdd-runner)
 python main.py federated .
 
-# 方式 4: 查看 6 大架构分类与 30+ 经典问题论缺陷目录
+# 方式 8: 查看 6 大架构分类与 30+ 经典问题论缺陷目录
 python main.py categories
 python main.py catalog --category "Security & Supply Chain"
 
-# 方式 5: 查阅全阶缺陷终结数学与系统论证明 (在线阅读或导出)
+# 方式 9: 查阅全阶缺陷终结数学与系统论证明
 python main.py proof
-
-# 方式 6: 自动化健康状态探测 (CI/CD 零退出码集成)
-python main.py health --json
 ```
 
 ---

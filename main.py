@@ -266,6 +266,170 @@ def cmd_answers(args) -> int:
     return 0
 
 
+def cmd_transcript(args) -> int:
+    """Discovers and parses AI dialogue transcripts into distilled TriAnchorSlices."""
+    from engine.transcript_ingestor import TranscriptIngestor
+    from engine.context_distiller_bridge import ContextDistillerBridge
+
+    ingestor = TranscriptIngestor()
+    path_str = getattr(args, "path", None)
+    if path_str:
+        transcript_path = Path(path_str)
+    else:
+        transcript_path = ingestor.discover_active_transcript()
+
+    if not transcript_path or not transcript_path.exists():
+        print("❌ 未能定位到任何活跃的 AI 编辑器转录本文件。")
+        return 1
+
+    events = ingestor.parse_transcript(transcript_path)
+    bridge = ContextDistillerBridge()
+    causal_slice = bridge.distill_tri_anchor_slice(events)
+
+    if getattr(args, "json", False):
+        res = {
+            "transcript_path": str(transcript_path),
+            "event_count": len(events),
+            "user_intent": causal_slice.user_intent,
+            "reasoning_claims": causal_slice.reasoning_claims,
+            "action_calls_count": len(causal_slice.action_calls),
+            "mutated_files": causal_slice.mutated_files,
+            "compression_ratio": causal_slice.compression_ratio
+        }
+        print(json.dumps(res, indent=2, ensure_ascii=False))
+        return 0
+
+    print("==========================================================================")
+    print("  📜 [TRANSCRIPT INGESTOR] 动态对话轨迹与因果切片抽取")
+    print("==========================================================================")
+    print(f"  • 转录本路径 : {transcript_path}")
+    print(f"  • 原始事件数 : {len(events)} 项 (涵盖对话历史与工具调用)")
+    print(f"  • Token 压缩率: 减负 {causal_slice.compression_ratio}% (剥离环境噪声与冗余上下文)")
+    print("-" * 74)
+    print(f"  🎯 [锚点 I: 用户意图] :\n     {causal_slice.user_intent[:200]}")
+    print(f"  🧠 [锚点 R: 思维声明] :\n     {causal_slice.reasoning_claims[:200]}...")
+    print(f"  ⚙️ [锚点 A: 物理动作] : {len(causal_slice.action_calls)} 次工具调用 | 触碰文件: {causal_slice.mutated_files}")
+    print("==========================================================================")
+    return 0
+
+
+def cmd_judge(args) -> int:
+    """Executes the Tri-Sieve Oracle judgment cascade on code and dialogue context."""
+    from engine.transcript_ingestor import TranscriptIngestor
+    from engine.context_distiller_bridge import ContextDistillerBridge
+    from engine.tri_sieve_oracle import TriSieveOracle
+
+    target_code = ""
+    target_file = getattr(args, "target", None)
+    if target_file and Path(target_file).exists():
+        target_code = Path(target_file).read_text(encoding="utf-8", errors="replace")
+    else:
+        target_code = "def sample(): pass"
+
+    # Optional transcript
+    causal_slice = None
+    transcript_path_str = getattr(args, "transcript", None)
+    ingestor = TranscriptIngestor()
+    t_path = Path(transcript_path_str) if transcript_path_str else ingestor.discover_active_transcript()
+    if t_path and t_path.exists():
+        events = ingestor.parse_transcript(t_path)
+        bridge = ContextDistillerBridge()
+        causal_slice = bridge.distill_tri_anchor_slice(events)
+
+    oracle = TriSieveOracle()
+    verdict = oracle.judge_mutation(target_code, causal_slice=causal_slice, file_path=str(target_file or "<candidate.py>"))
+
+    if getattr(args, "json", False):
+        print(json.dumps(verdict.to_dict(), indent=2, ensure_ascii=False))
+        return 0 if verdict.is_valid else 1
+
+    print("==========================================================================")
+    print("  ⚖️ [TRI-SIEVE ORACLE] 三阶漏斗型神经-符号共识裁判网格")
+    print("==========================================================================")
+    print(f"  • 终审裁决状态 : {'✅ ' + verdict.final_status if verdict.is_valid else '❌ ' + verdict.final_status}")
+    print(f"  • 决策耗时     : {verdict.elapsed_ms:.2f} ms (毫秒级无感判定)")
+    print("-" * 74)
+    print(f"  [滤网 1: 编译器 AST 结构与反作弊] : {'✅ PASS' if verdict.sieve1_pass else '❌ FAIL'}")
+    for f in verdict.sieve1_findings:
+        print(f"     ⚠️ {f}")
+    print(f"  [滤网 2: 代数对称性与蜕变对抗神谕] : {'✅ PASS' if verdict.sieve2_pass else '❌ FAIL'}")
+    for v in verdict.sieve2_violations:
+        print(f"     ⚠️ {v}")
+    print(f"  [滤网 3: 思维链-动作因果真实性对齐] : {'✅ PASS' if verdict.sieve3_pass else '❌ FAIL'}")
+    for d in verdict.sieve3_discrepancies:
+        print(f"     ⚠️ {d}")
+
+    if verdict.counterexamples:
+        print("-" * 74)
+        print("  🔍 [数学反例导向修复 (CEGAR Counterexamples)]:")
+        for cx in verdict.counterexamples:
+            print(f"     • {cx}")
+
+    if verdict.remediation_guidance:
+        print("-" * 74)
+        print("  💡 [修复神谕行动指南]:")
+        for g in verdict.remediation_guidance:
+            print(f"     • {g}")
+
+    print("==========================================================================")
+    return 0 if verdict.is_valid else 1
+
+
+def cmd_dogfood(args) -> int:
+    """Executes bidirectional self-audit on current active dialogue and latest code mutations."""
+    from engine.transcript_ingestor import TranscriptIngestor
+    from engine.context_distiller_bridge import ContextDistillerBridge
+    from engine.tri_sieve_oracle import TriSieveOracle
+
+    print("==========================================================================")
+    print("  🐕 [DOGFOODING] 启动项目双向互检：对当前会话进行全阶真实性与代码终审")
+    print("==========================================================================")
+
+    ingestor = TranscriptIngestor()
+    transcript_path = ingestor.discover_active_transcript()
+    if not transcript_path:
+        print("❌ 未能发现当前运行编辑器的活动转录本。")
+        return 1
+
+    events = ingestor.parse_transcript(transcript_path)
+    bridge = ContextDistillerBridge()
+    causal_slice = bridge.distill_tri_anchor_slice(events)
+
+    print(f"  1. 转录本探测定位: {transcript_path}")
+    print(f"  2. 事件流解析完成: 共 {len(events)} 个历史事件")
+    print(f"  3. 语义因果切片提取: Token 减负 {causal_slice.compression_ratio}%")
+    print(f"     • 用户最新需求: {causal_slice.user_intent[:120]}...")
+    print(f"     • 触碰修改文件: {causal_slice.mutated_files}")
+
+    # Read latest mutated file code or self
+    sample_code = ""
+    target_f = causal_slice.mutated_files[0] if causal_slice.mutated_files else str(PROJECT_ROOT / "main.py")
+    if Path(target_f).exists():
+        sample_code = Path(target_f).read_text(encoding="utf-8", errors="replace")
+
+    oracle = TriSieveOracle()
+    verdict = oracle.judge_mutation(sample_code, causal_slice=causal_slice, file_path=target_f)
+
+    print("-" * 74)
+    print(f"  4. 三阶裁判网格对当前对话与代码执行终审:")
+    print(f"     • 滤网 1 (AST 反作弊)     : {'✅ 通过' if verdict.sieve1_pass else '❌ 拦截'}")
+    if verdict.sieve1_findings:
+        for f in verdict.sieve1_findings:
+            print(f"       ⚠️ {f}")
+    print(f"     • 滤网 2 (代数蜕变神谕)   : {'✅ 通过' if verdict.sieve2_pass else '❌ 破损'}")
+    if verdict.sieve2_violations:
+        for v in verdict.sieve2_violations:
+            print(f"       ⚠️ {v}")
+    print(f"     • 滤网 3 (思维链真实一致) : {'✅ 通过' if verdict.sieve3_pass else '❌ 虚假'}")
+    if verdict.sieve3_discrepancies:
+        for d in verdict.sieve3_discrepancies:
+            print(f"       ⚠️ {d}")
+    print(f"     • 终审裁决状态            : {'✅ 100% 真实有效 (COMMITTED)' if verdict.is_valid else '❌ 违规打回 (ROLLED_BACK)'}")
+    print(f"     • 裁决总耗时              : {verdict.elapsed_ms:.2f} ms")
+    print("==========================================================================")
+    return 0 if verdict.is_valid else 1
+
+
 def cmd_panel(args) -> int:
     """Pagoda/BaoTa style interactive numbered CLI menu."""
     while True:
@@ -282,10 +446,13 @@ def cmd_panel(args) -> int:
         print("  8. 执行蜕变神谕验证测试套件 (Run Metamorphic Test Suite)")
         print("  9. 清理缓存与编译产物 (Clean Temporary Caches)")
         print(" 10. 工业母机功能白话与终极形态定论 (Plain Definitions & Ultimate Form Verdict)")
+        print(" 11. 动态转录本发现与因果切片抽取 (Discover Active Transcript & Slice)")
+        print(" 12. 三阶漏斗裁判网格终审 (Run Tri-Sieve Oracle Judgment)")
+        print(" 13. 双向互检 Dogfooding (Self-Audit on Current Live Dialogue)")
         print("  0. 退出控制台 (Exit)")
         print("=" * 65)
 
-        choice = input("请选择操作序号 [0-10]: ").strip()
+        choice = input("请选择操作序号 [0-13]: ").strip()
         if choice == "0":
             print("👋 退出控制台。")
             break
@@ -316,6 +483,14 @@ def cmd_panel(args) -> int:
             cmd_clean(args)
         elif choice == "10":
             cmd_answers(args)
+        elif choice == "11":
+            cmd_transcript(args)
+        elif choice == "12":
+            path = input("请输入要裁决的代码文件路径: ").strip()
+            args.target = path or str(PROJECT_ROOT / "main.py")
+            cmd_judge(args)
+        elif choice == "13":
+            cmd_dogfood(args)
         else:
             print("⚠️ 无效输入，请重新选择。")
     return 0
@@ -380,6 +555,18 @@ def build_cli() -> argparse.ArgumentParser:
     p_run = subparsers.add_parser("run", parents=[parent], help="Default execution: run audit on target or self")
     p_run.add_argument("target", nargs="?", default=".", help="Target to audit")
     p_run.set_defaults(func=lambda a: cmd_audit(argparse.Namespace(target=a.target, json=a.json)))
+
+    p_transcript = subparsers.add_parser("transcript", parents=[parent], help="Discover and distill AI conversation transcripts")
+    p_transcript.add_argument("--path", "-p", help="Explicit path to transcript file")
+    p_transcript.set_defaults(func=cmd_transcript)
+
+    p_judge = subparsers.add_parser("judge", parents=[parent], help="Run Tri-Sieve Oracle final judgment cascade")
+    p_judge.add_argument("--target", "-t", help="Target source file to judge")
+    p_judge.add_argument("--transcript", help="Path to transcript file for CoT-Action alignment")
+    p_judge.set_defaults(func=cmd_judge)
+
+    p_dogfood = subparsers.add_parser("dogfood", parents=[parent], help="Execute bidirectional self-audit on current active dialogue")
+    p_dogfood.set_defaults(func=cmd_dogfood)
 
     return parser
 

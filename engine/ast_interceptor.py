@@ -51,8 +51,9 @@ class PathologyASTVisitor(ast.NodeVisitor):
 
         self.generic_visit(node)
 
-        # Check for Goodhart Zero Assertion in test functions
-        if node.name.startswith("test_") or node.name.endswith("_test"):
+        # Check for Goodhart Zero Assertion in test functions (ignoring CLI command dispatchers cmd_*)
+        is_test_fn = (node.name.startswith("test_") or node.name.endswith("_test")) and not node.name.startswith("cmd_")
+        if is_test_fn:
             if self._current_function_assertions == 0:
                 self.findings.append(DiagnosticFinding(
                     code="PRB-E105",

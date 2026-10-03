@@ -67,10 +67,11 @@ class DialogueOracle:
         candidate_code: Optional[str] = None,
         stop_reason: Optional[str] = None,
         os_platform: str = "windows",
-        workspace_root: str = "D:\\github\\tool-problem-optima"
+        workspace_root: Optional[str] = None
     ) -> List[DialogueFinding]:
         findings: List[DialogueFinding] = []
         action_results = action_results or []
+        ws_root = workspace_root or str(Path(__file__).resolve().parent.parent)
 
         reasoning_lower = reasoning_claims.lower()
         intent_lower = user_intent.lower()

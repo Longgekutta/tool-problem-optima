@@ -10,20 +10,24 @@ class TestToolFederation(unittest.TestCase):
         self.coordinator = ToolFederationCoordinator()
 
     def test_tool_discovery(self):
-        # Verify sister tool discovery in D:/github
+        # If sister tools exist in environment, verify resolution
         code_optima = self.coordinator._find_tool_script("tool-code-optima")
-        self.assertIsNotNone(code_optima)
-        self.assertTrue(code_optima.exists())
+        if code_optima is not None:
+            self.assertTrue(code_optima.exists())
+            self.assertEqual(code_optima.name, "main.py")
 
-        syntax_gate = self.coordinator._find_tool_script("tool-syntax-gate")
-        self.assertIsNotNone(syntax_gate)
-        micro_patcher = self.coordinator._find_tool_script("tool-micro-patcher")
-        self.assertIsNotNone(micro_patcher)
-        self.assertTrue(micro_patcher.exists())
+        # Verify nonexistent tool is gracefully handled without error
+        ghost_tool = self.coordinator._find_tool_script("tool-nonexistent-ghost")
+        self.assertIsNone(ghost_tool)
 
-        git_ckpt = self.coordinator._find_tool_script("tool-git-checkpoint")
-        self.assertIsNotNone(git_ckpt)
-        self.assertTrue(git_ckpt.exists())
+    def test_standalone_isolation(self):
+        # Verify that ToolFederationCoordinator runs safely even in a completely isolated directory
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            isolated_coord = ToolFederationCoordinator(workspace_root=Path(td))
+            res = isolated_coord.run_syntax_gate("dummy.py")
+            self.assertEqual(res.get("status"), "SKIPPED")
+            self.assertIn("not found", res.get("reason", ""))
 
     def test_syntax_gate_invocation(self):
         res = self.coordinator.run_syntax_gate(str(Path(__file__).resolve()))

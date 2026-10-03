@@ -59,14 +59,15 @@ def is_unverified_phantom_package(package_name: str, file_path: str = "") -> boo
     # 1. Stdlib check
     if top in sys.stdlib_module_names or top in sys.builtin_module_names:
         return False
+    repo_root = Path(__file__).resolve().parent.parent
     # 2. Local workspace check
     if file_path and file_path != "<memory>":
         p = Path(file_path).resolve()
-        for parent in [p.parent, p.parent.parent, Path.cwd(), Path("D:/github/tool-problem-optima")]:
+        for parent in [p.parent, p.parent.parent, Path.cwd(), repo_root]:
             if (parent / f"{top}.py").exists() or (parent / top / "__init__.py").exists() or (parent / top).is_dir():
                 return False
     else:
-        for parent in [Path.cwd(), Path("D:/github/tool-problem-optima")]:
+        for parent in [Path.cwd(), repo_root]:
             if (parent / f"{top}.py").exists() or (parent / top / "__init__.py").exists() or (parent / top).is_dir():
                 return False
     # 3. Environment installed distributions

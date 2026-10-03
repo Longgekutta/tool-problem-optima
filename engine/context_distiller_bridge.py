@@ -13,6 +13,7 @@ Reduces context volume by 80%~92% in <10ms without loss of causal invariants.
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Dict, Optional, Any
+import os
 import json
 import re
 
@@ -36,7 +37,15 @@ class ContextDistillerBridge:
 
     def __init__(self, workspace_root: Optional[Path] = None):
         self.workspace_root = workspace_root or Path.cwd()
-        self.distiller_repo = Path("D:/github/tool-token-distiller").resolve()
+        distiller_path = os.environ.get("TOOL_TOKEN_DISTILLER_PATH")
+        if distiller_path:
+            self.distiller_repo = Path(distiller_path).resolve()
+        else:
+            sibling = Path(__file__).resolve().parent.parent.parent / "tool-token-distiller"
+            if sibling.exists():
+                self.distiller_repo = sibling.resolve()
+            else:
+                self.distiller_repo = Path("D:/github/tool-token-distiller").resolve()
 
     def distill_tri_anchor_slice(self, events: List[TranscriptEvent]) -> TriAnchorSlice:
         """

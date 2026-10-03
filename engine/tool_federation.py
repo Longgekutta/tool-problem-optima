@@ -12,6 +12,7 @@ Coordinates specialized industrial mother machines in D:/github:
 Synthesizes external tool findings with Problemology Tensor diagnostics.
 """
 
+import os
 import sys
 import subprocess
 import json
@@ -21,19 +22,31 @@ from typing import Dict, Any, Optional
 
 class ToolFederationCoordinator:
     def __init__(self, workspace_root: Optional[Path] = None):
+        self._explicit_root = workspace_root is not None
         if workspace_root is None:
-            # Default to D:/github or parent directory
-            self.workspace_root = Path("D:/github").resolve()
-            if not self.workspace_root.exists():
-                self.workspace_root = Path(__file__).resolve().parent.parent.parent
+            env_root = os.environ.get("AGENT_WORKSPACE_ROOT") or os.environ.get("GITHUB_TOOLS_ROOT")
+            if env_root and Path(env_root).exists():
+                self.workspace_root = Path(env_root).resolve()
+            else:
+                sibling_root = Path(__file__).resolve().parent.parent.parent
+                if (sibling_root / "tool-code-optima").exists():
+                    self.workspace_root = sibling_root.resolve()
+                elif Path("D:/github").exists():
+                    self.workspace_root = Path("D:/github").resolve()
+                else:
+                    self.workspace_root = sibling_root.resolve()
         else:
-            self.workspace_root = workspace_root
+            self.workspace_root = Path(workspace_root).resolve()
 
     def _find_tool_script(self, tool_name: str) -> Optional[Path]:
         """Locates the main.py or run.ps1 of a sister tool."""
         target = self.workspace_root / tool_name / "main.py"
         if target.exists():
             return target
+        if not self._explicit_root:
+            sibling_target = Path(__file__).resolve().parent.parent.parent / tool_name / "main.py"
+            if sibling_target.exists():
+                return sibling_target
         return None
 
     def run_syntax_gate(self, target_path: str) -> Dict[str, Any]:

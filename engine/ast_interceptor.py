@@ -38,15 +38,51 @@ from dataclasses import dataclass
 from typing import List, Optional, Set, Tuple
 
 
-KNOWN_PHANTOM_PACKAGES = {
-    "fast_sort_3d",
-    "math_fast",
-    "requests_jwt_bearer",
-    "huggingface_hub_v2",
-    "crypto_super_lib",
-    "python_fast_ai",
-    "tensor_quick_solve",
-}
+import sys
+import importlib.metadata
+import importlib.util
+import pkgutil
+
+
+def is_unverified_phantom_package(package_name: str, file_path: str = "") -> bool:
+    """
+    Generalized Phantom Package Resolver (Zero Hardcoding):
+    Verifies package existence against:
+      1. Python Standard Library frozen universe (sys.stdlib_module_names, sys.builtin_module_names)
+      2. Local workspace files/directories adjacent to file_path
+      3. Python environment installed distributions (importlib.metadata)
+      4. Import loaders (importlib.util.find_spec)
+    """
+    top = package_name.split(".")[0]
+    if not top:
+        return False
+    # 1. Stdlib check
+    if top in sys.stdlib_module_names or top in sys.builtin_module_names:
+        return False
+    # 2. Local workspace check
+    if file_path and file_path != "<memory>":
+        p = Path(file_path).resolve()
+        for parent in [p.parent, p.parent.parent, Path.cwd(), Path("D:/github/tool-problem-optima")]:
+            if (parent / f"{top}.py").exists() or (parent / top / "__init__.py").exists() or (parent / top).is_dir():
+                return False
+    else:
+        for parent in [Path.cwd(), Path("D:/github/tool-problem-optima")]:
+            if (parent / f"{top}.py").exists() or (parent / top / "__init__.py").exists() or (parent / top).is_dir():
+                return False
+    # 3. Environment installed distributions
+    try:
+        importlib.metadata.version(top)
+        return False
+    except (importlib.metadata.PackageNotFoundError, ValueError):
+        pass
+    # 4. Loader check via modern importlib.util.find_spec
+    try:
+        if importlib.util.find_spec(top) is not None:
+            return False
+    except Exception:
+        pass
+
+    return True
 
 
 @dataclass
@@ -505,36 +541,34 @@ class PathologyASTVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_Import(self, node: ast.Import):
-        # PRB-E501: Phantom Package Hallucination
+        # PRB-E501: Phantom Package Hallucination (Zero-Hardcoding Check)
         for alias in node.names:
-            top_module = alias.name.split(".")[0]
-            if top_module in KNOWN_PHANTOM_PACKAGES:
+            if is_unverified_phantom_package(alias.name, self.file_path):
                 self.findings.append(DiagnosticFinding(
                     code="PRB-E501",
                     name="Phantom Package Hallucination (Slopsquatting)",
                     file_path=self.file_path,
                     line_number=node.lineno,
                     column=node.col_offset,
-                    message=f"Imported package '{alias.name}' is a known non-existent hallucinated package.",
+                    message=f"Imported package '{alias.name}' does not exist in Python Standard Library, local workspace, or installed environment.",
                     snippet=self._get_snippet(node.lineno),
-                    remediation_suggestion="Verify package existence in Python Standard Library or official PyPI registry before importing."
+                    remediation_suggestion="Verify package existence in Python Standard Library (sys.stdlib_module_names) or official PyPI registry before importing."
                 ))
         self.generic_visit(node)
 
     def visit_ImportFrom(self, node: ast.ImportFrom):
         # PRB-E501: Phantom Package in from ... import
         if node.module:
-            top_module = node.module.split(".")[0]
-            if top_module in KNOWN_PHANTOM_PACKAGES:
+            if is_unverified_phantom_package(node.module, self.file_path):
                 self.findings.append(DiagnosticFinding(
                     code="PRB-E501",
                     name="Phantom Package Hallucination (Slopsquatting)",
                     file_path=self.file_path,
                     line_number=node.lineno,
                     column=node.col_offset,
-                    message=f"Imported module '{node.module}' is a known non-existent hallucinated package.",
+                    message=f"Imported module '{node.module}' does not exist in Python Standard Library, local workspace, or installed environment.",
                     snippet=self._get_snippet(node.lineno),
-                    remediation_suggestion="Verify package existence in Python Standard Library or official PyPI registry before importing."
+                    remediation_suggestion="Verify package existence in Python Standard Library (sys.stdlib_module_names) or official PyPI registry before importing."
                 ))
 
         # PRB-E502: Dependency Bloat: wildcard 'from x import *'

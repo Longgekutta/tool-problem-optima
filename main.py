@@ -397,31 +397,48 @@ def cmd_dogfood(args) -> int:
     causal_slice = bridge.distill_tri_anchor_slice(events)
 
     print(f"  1. 转录本探测定位: {transcript_path}")
-    print(f"  2. 事件流解析完成: 共 {len(events)} 个历史事件")
-    print(f"  3. 语义因果切片提取: Token 减负 {causal_slice.compression_ratio}%")
-    print(f"     • 用户最新需求: {causal_slice.user_intent[:120]}...")
-    print(f"     • 触碰修改文件: {causal_slice.mutated_files}")
+    print(f"  2. 全局多轮时序回放 (Full Trajectory Replay - 对标 agent-replay & auditable):")
+    print(f"     • 历史事件总数: 共 {len(events)} 个 (包含 {causal_slice.user_turns_count} 轮用户诉求, {causal_slice.history_errors_count} 次历史命令报错/异常)")
+    print(f"     • 全阶时序演化: 覆盖全量 {causal_slice.user_turns_count} 轮历史用户约束链注入与状态追踪")
+    print(f"  3. 当前回合因果切片与触碰文件:")
+    print(f"     • 用户最新需求: {causal_slice.user_intent[:100]}...")
+    if causal_slice.mutated_files:
+        print(f"     • 触碰修改文件: {causal_slice.mutated_files}")
+    else:
+        print(f"     • 触碰修改文件: [] (只读问答/指令交互，未触碰代码文件)")
+    print(f"     • Token因果提纯: 减负 {causal_slice.compression_ratio}%")
 
-    # Read latest mutated file code or self
+    # Read latest mutated file code (strictly from causal mutations, never sneakily self-substitute)
     sample_code = ""
-    target_f = causal_slice.mutated_files[0] if causal_slice.mutated_files else str(PROJECT_ROOT / "main.py")
-    if Path(target_f).exists():
-        sample_code = Path(target_f).read_text(encoding="utf-8", errors="replace")
+    target_f = ""
+    if causal_slice.mutated_files:
+        for mf in causal_slice.mutated_files:
+            p = Path(mf)
+            if p.exists() and p.is_file():
+                target_f = str(p.resolve())
+                sample_code = p.read_text(encoding="utf-8", errors="replace")
+                break
+        if not target_f:
+            target_f = causal_slice.mutated_files[0]
 
     oracle = TriSieveOracle()
-    verdict = oracle.judge_mutation(sample_code, causal_slice=causal_slice, file_path=target_f)
+    verdict = oracle.judge_mutation(sample_code, causal_slice=causal_slice, file_path=target_f or "session_audit")
 
     print("-" * 74)
     print(f"  4. 三阶裁判网格对当前对话与代码执行终审:")
-    print(f"     • 滤网 1 (AST 反作弊)     : {'✅ 通过' if verdict.sieve1_pass else '❌ 拦截'}")
-    if verdict.sieve1_findings:
-        for f in verdict.sieve1_findings:
-            print(f"       ⚠️ {f}")
-    print(f"     • 滤网 2 (代数蜕变神谕)   : {'✅ 通过' if verdict.sieve2_pass else '❌ 破损'}")
-    if verdict.sieve2_violations:
-        for v in verdict.sieve2_violations:
-            print(f"       ⚠️ {v}")
-    print(f"     • 滤网 3 (思维链真实一致) : {'✅ 通过' if verdict.sieve3_pass else '❌ 虚假'}")
+    if not sample_code and not causal_slice.mutated_files:
+        print(f"     • 滤网 1 (AST 反作弊)     : ⚪ 免检通过 (会话未产生代码突变，无假测试)")
+        print(f"     • 滤网 2 (代数蜕变神谕)   : ⚪ 免检通过 (无待测代码，无需变异验证)")
+    else:
+        print(f"     • 滤网 1 (AST 反作弊)     : {'✅ 通过' if verdict.sieve1_pass else '❌ 拦截'}")
+        if verdict.sieve1_findings:
+            for f in verdict.sieve1_findings:
+                print(f"       ⚠️ {f}")
+        print(f"     • 滤网 2 (代数蜕变神谕)   : {'✅ 通过' if verdict.sieve2_pass else '❌ 破损'}")
+        if verdict.sieve2_violations:
+            for v in verdict.sieve2_violations:
+                print(f"       ⚠️ {v}")
+    print(f"     • 滤网 3 (思维链与时序账本) : {'✅ 通过' if verdict.sieve3_pass else '❌ 虚假'}")
     if verdict.sieve3_discrepancies:
         for d in verdict.sieve3_discrepancies:
             print(f"       ⚠️ {d}")

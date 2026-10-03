@@ -164,14 +164,18 @@ class TriSieveOracle:
         norm_calls = action_calls or (causal_slice.action_calls if causal_slice else [])
         norm_results = action_results or (getattr(causal_slice, "action_results", []) if causal_slice else [])
 
-        # 3.1 Temporal Constraint Ledger Tracking
-        if norm_intent:
+        # 3.1 Temporal Constraint Ledger Tracking across full multi-turn trajectory
+        if causal_slice and hasattr(causal_slice, "all_user_intents") and causal_slice.all_user_intents:
+            for t_idx, u_prompt in enumerate(causal_slice.all_user_intents, 1):
+                self.temporal_ledger.feed_turn(t_idx, u_prompt)
+        elif norm_intent:
             self.temporal_ledger.feed_turn(1, norm_intent)
-            mutated_files = causal_slice.mutated_files if causal_slice else []
-            temporal_violations = self.temporal_ledger.validate_candidate(candidate_code, mutated_files=mutated_files)
-            for tv in temporal_violations:
-                sieve3_discrepancies.append(f"[PRB-E001] Temporal Ledger Violation: {tv.violation_message}")
-                guidance.append(f"Sieve 3 Temporal Fix: {tv.remediation_suggestion}")
+
+        mutated_files = causal_slice.mutated_files if causal_slice else []
+        temporal_violations = self.temporal_ledger.validate_candidate(candidate_code, mutated_files=mutated_files)
+        for tv in temporal_violations:
+            sieve3_discrepancies.append(f"[PRB-E001] Temporal Ledger Violation: {tv.violation_message}")
+            guidance.append(f"Sieve 3 Temporal Fix: {tv.remediation_suggestion}")
 
         # 3.2 Dialogue Oracle Trajectory Checks
         structured_calls: List[Dict[str, Any]] = []

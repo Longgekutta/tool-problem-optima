@@ -80,7 +80,7 @@ def is_unverified_phantom_package(package_name: str, file_path: str = "") -> boo
     try:
         if importlib.util.find_spec(top) is not None:
             return False
-    except Exception:
+    except (ValueError, AttributeError, ImportError):
         pass
 
     return True
@@ -112,7 +112,7 @@ class PathologyASTVisitor(ast.NodeVisitor):
         self._lock_orderings: List[Tuple[str, str, int]] = []
 
     def _get_snippet(self, lineno: int) -> str:
-        if 1 <= lineno <= len(self.source_lines):
+        if 0 <= lineno - 1 < len(self.source_lines):
             return self.source_lines[lineno - 1].strip()
         return ""
 
@@ -127,8 +127,15 @@ class PathologyASTVisitor(ast.NodeVisitor):
 
         self.generic_visit(node)
 
-        # Check test functions
-        is_test_fn = (node.name.startswith("test_") or node.name.endswith("_test")) and not node.name.startswith("cmd_")
+        # Check test functions (only in test files, test directories, or memory test snippets)
+        is_test_file = True
+        if self.file_path and self.file_path != "<memory>":
+            p = Path(self.file_path)
+            is_in_test_dir = any(part in ("tests", "test") for part in p.parts)
+            is_test_filename = p.name.startswith("test_") or p.name.endswith("_test.py")
+            is_test_file = is_in_test_dir or is_test_filename
+
+        is_test_fn = is_test_file and (node.name.startswith("test_") or node.name.endswith("_test")) and not node.name.startswith("cmd_")
         if is_test_fn:
             # PRB-E105: Goodhart's Law (Zero Assertion)
             if self._current_function_assertions == 0:

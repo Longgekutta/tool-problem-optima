@@ -431,6 +431,120 @@ def cmd_dogfood(args) -> int:
     return 0 if verdict.is_valid else 1
 
 
+def cmd_preflight(args) -> int:
+    """Auto-Pilot Pre-Flight Gate: Verifies code changes and active session invariants before delivery."""
+    import subprocess
+    from engine.transcript_ingestor import TranscriptIngestor
+    from engine.context_distiller_bridge import ContextDistillerBridge
+    from engine.tri_sieve_oracle import TriSieveOracle
+
+    ws_path = Path(getattr(args, "workspace", None) or Path.cwd()).resolve()
+
+    # 1. Detect candidate modified files via git status if in a git repo
+    changed_files = []
+    try:
+        res = subprocess.run(["git", "status", "--porcelain"], cwd=str(ws_path), capture_output=True, text=True, timeout=5)
+        if res.returncode == 0:
+            for line in res.stdout.splitlines():
+                parts = line.strip().split()
+                if len(parts) >= 2:
+                    rel_p = parts[-1]
+                    fpath = ws_path / rel_p
+                    if fpath.exists() and fpath.suffix in (".py", ".js", ".ts", ".go", ".c", ".cpp"):
+                        changed_files.append(fpath)
+    except (subprocess.SubprocessError, OSError):
+        changed_files = []
+
+    # If git didn't yield files, check explicit target or recently touched files
+    explicit_target = getattr(args, "target", None)
+    if explicit_target and Path(explicit_target).exists():
+        p = Path(explicit_target)
+        if p.is_file() and p not in changed_files:
+            changed_files.append(p)
+        elif p.is_dir():
+            for f in p.rglob("*.py"):
+                if f not in changed_files:
+                    changed_files.append(f)
+
+    # 2. Ingest active conversation transcript for dialogue constraints
+    ingestor = TranscriptIngestor()
+    transcript_path = ingestor.discover_active_transcript()
+    causal_slice = None
+    if transcript_path and transcript_path.exists():
+        events = ingestor.parse_transcript(transcript_path)
+        bridge = ContextDistillerBridge()
+        causal_slice = bridge.distill_tri_anchor_slice(events)
+        for mf in causal_slice.mutated_files:
+            mf_p = Path(mf) if Path(mf).is_absolute() else ws_path / mf
+            if mf_p.exists() and mf_p.is_file() and mf_p not in changed_files:
+                changed_files.append(mf_p)
+
+    # If still no changed files, default to scanning python files in current workspace
+    if not changed_files:
+        for p in ws_path.glob("*.py"):
+            changed_files.append(p)
+
+    # 3. Execute Tri-Sieve Oracle inspection
+    oracle = TriSieveOracle()
+    blocking_violations = []
+
+    for cf in changed_files:
+        if not cf.exists() or cf.is_dir():
+            continue
+        try:
+            content = cf.read_text(encoding="utf-8", errors="replace")
+        except (OSError, UnicodeDecodeError):
+            continue
+
+        v = oracle.judge_mutation(content, causal_slice=causal_slice, file_path=str(cf))
+        if not v.is_valid:
+            blocking_violations.append({
+                "file": str(cf),
+                "issues": v.failed_issues,
+                "remediation": "See pathology catalog"
+            })
+
+    is_cleared = (len(blocking_violations) == 0)
+
+    if getattr(args, "json", False):
+        res = {
+            "status": "CLEARED" if is_cleared else "BLOCKED",
+            "is_cleared": is_cleared,
+            "workspace": str(ws_path),
+            "scanned_files_count": len(changed_files),
+            "scanned_files": [str(f) for f in changed_files],
+            "blocking_violations": blocking_violations,
+            "verdict": "SAFE_TO_DELIVER" if is_cleared else "REMEDIATION_REQUIRED"
+        }
+        print(json.dumps(res, indent=2, ensure_ascii=False))
+        return 0 if is_cleared else 1
+
+    # Human-readable output
+    print("==========================================================================")
+    print("  🛡️ [AUTOPILOT PRE-FLIGHT GATE] 智能体交付前无毒物理安检门")
+    print("==========================================================================")
+    print(f"  • 工作区目录    : {ws_path}")
+    print(f"  • 扫描变动文件  : {len(changed_files)} 个")
+    for f in changed_files:
+        print(f"    - {f.name}")
+    print(f"  • 会话转录本流  : {'已挂载 (' + str(len(causal_slice.action_calls)) + ' 个工具调用)' if causal_slice else '未定位到活跃转录本'}")
+    print("--------------------------------------------------------------------------")
+
+    if is_cleared:
+        print("  ✅ [PASS] 物理安检门 100% 达标：零同义反复、零虚假包、零断言作弊、零时序失忆。")
+        print("  🎉 准予交付！")
+        print("==========================================================================")
+        return 0
+    else:
+        print(f"  🚨 [BLOCKED] 拦截到 {len(blocking_violations)} 个严重违规病理，严禁交付未修复代码！")
+        for bv in blocking_violations:
+            print(f"  ❌ 文件: {bv['file']}")
+            for issue in bv["issues"]:
+                print(f"     ⚠️ {issue}")
+        print("==========================================================================")
+        return 1
+
+
 def cmd_panel(args) -> int:
     """Pagoda/BaoTa style interactive numbered CLI menu."""
     while True:
@@ -569,6 +683,16 @@ def build_cli() -> argparse.ArgumentParser:
 
     p_dogfood = subparsers.add_parser("dogfood", parents=[parent], help="Execute bidirectional self-audit on current active dialogue")
     p_dogfood.set_defaults(func=cmd_dogfood)
+
+    p_preflight = subparsers.add_parser("preflight", parents=[parent], help="Auto-Pilot Pre-Flight Gate for code changes and session invariants")
+    p_preflight.add_argument("target", nargs="?", default=None, help="Target file or directory to verify")
+    p_preflight.add_argument("--workspace", "-w", help="Workspace root directory")
+    p_preflight.set_defaults(func=cmd_preflight)
+
+    p_autopilot = subparsers.add_parser("autopilot", parents=[parent], help="Alias for preflight")
+    p_autopilot.add_argument("target", nargs="?", default=None, help="Target file or directory to verify")
+    p_autopilot.add_argument("--workspace", "-w", help="Workspace root directory")
+    p_autopilot.set_defaults(func=cmd_preflight)
 
     return parser
 

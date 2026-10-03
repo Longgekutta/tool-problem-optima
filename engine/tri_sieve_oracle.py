@@ -48,6 +48,10 @@ class TriSieveVerdict:
     remediation_guidance: List[str]               # Precise guidance for the solver
     elapsed_ms: float
 
+    @property
+    def failed_issues(self) -> List[str]:
+        return self.sieve1_findings + self.sieve2_violations + self.sieve3_discrepancies
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "is_valid": self.is_valid,
@@ -141,7 +145,7 @@ class TriSieveOracle:
         # =========================================================================
         sieve2_pass = True
         if sieve1_pass and is_python:
-            violations = self.metamorphic_engine.verify_source_algebra(candidate_code)
+            violations = self.metamorphic_engine.verify_source_algebra(candidate_code, file_path=file_path)
             for v in violations:
                 sieve2_violations.append(
                     f"[{v.relation_name}] {v.property_description} -> Expected: {v.expected_property}, Actual: {v.actual_output}"

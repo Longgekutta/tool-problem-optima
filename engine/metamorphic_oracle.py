@@ -15,7 +15,9 @@ this engine evaluates algebraic properties across state spaces:
   5. Adversarial Input Fuzzing: Boundary and Out-of-Distribution injection
 """
 
+import sys
 import random
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Callable, Any, List, Optional, Tuple
 
@@ -132,7 +134,7 @@ class MetamorphicOracleEngine:
                 ))
         return violations
 
-    def verify_source_algebra(self, source_code: str) -> List[MetamorphicViolation]:
+    def verify_source_algebra(self, source_code: str, file_path: Optional[str] = None) -> List[MetamorphicViolation]:
         """
         Dynamically discovers functions in source code and verifies core algebraic invariants:
         - Commutativity on 2-arg symmetric candidates
@@ -144,10 +146,21 @@ class MetamorphicOracleEngine:
             "__file__": "<sandbox_module>",
             "__name__": "__sandbox__"
         }
+        if file_path:
+            p = Path(file_path).resolve()
+            sandbox["__file__"] = str(p)
+            if (p.parent / "__init__.py").exists():
+                sandbox["__package__"] = p.parent.name
+                parent_root = str(p.parent.parent)
+                if parent_root not in sys.path:
+                    sys.path.insert(0, parent_root)
         try:
             # Execute in safe isolated sandbox namespace (unified globals/locals)
             exec(source_code, sandbox, sandbox)
         except Exception as e:
+            err_msg = str(e)
+            if isinstance(e, ImportError) and ("relative import" in err_msg or "no known parent package" in err_msg):
+                return []
             return [MetamorphicViolation(
                 relation_name="MR-COMPILE-CRASH",
                 property_description="Crash during module loading",
@@ -158,24 +171,29 @@ class MetamorphicOracleEngine:
                 causal_diagnosis=f"Module level execution threw: {e}"
             )]
 
+        import inspect
         for name, obj in sandbox.items():
-            # Only test pure functions, ignore imports and CLI dispatchers cmd_*
-            if callable(obj) and not name.startswith(("_", "cmd_")):
-                try:
-                    import inspect
-                    sig = inspect.signature(obj)
-                    param_count = len(sig.parameters)
-                    if param_count == 2 and any(k in name.lower() for k in ("add", "sum", "mult", "sym", "merge", "equal", "or", "and", "xor")):
-                        sample_pairs = [(1, 2), (-3, 5), (0, 0), (10, -10)]
-                        v = self.test_commutativity(obj, sample_pairs)
-                        if v:
-                            violations.append(v)
-                    elif param_count == 1 and any(k in name.lower() for k in ("clean", "strip", "sort", "norm", "abs", "idemp", "dedup")):
-                        sample_inputs = [0, 5, -10, 42]
-                        v = self.test_idempotence(obj, sample_inputs)
-                        if v:
-                            violations.append(v)
-                except Exception:
-                    continue
+            # Only test pure functions (skip classes, modules, and non-functions)
+            if not inspect.isfunction(obj):
+                continue
+            if name.startswith(("_", "cmd_")):
+                continue
+
+            tokens = set(name.lower().split("_"))
+            try:
+                sig = inspect.signature(obj)
+                param_count = len(sig.parameters)
+                if param_count == 2 and any(k in tokens for k in ("add", "sum", "mult", "sym", "merge", "equal", "or", "and", "xor")):
+                    sample_pairs = [(1, 2), (-3, 5), (0, 0), (10, -10)]
+                    v = self.test_commutativity(obj, sample_pairs)
+                    if v:
+                        violations.append(v)
+                elif param_count == 1 and any(k in tokens for k in ("clean", "strip", "sort", "norm", "abs", "idemp", "dedup")):
+                    sample_inputs = [0, 5, -10, 42]
+                    v = self.test_idempotence(obj, sample_inputs)
+                    if v:
+                        violations.append(v)
+            except Exception:
+                continue
 
         return violations

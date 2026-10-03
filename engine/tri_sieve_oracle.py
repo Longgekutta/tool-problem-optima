@@ -7,11 +7,14 @@ The ultimate, non-probabilistic arbiter that evaluates AI-generated mutations
 across three cascade sieves:
 
   - Sieve 1: Structural & Anti-Gaming Gate (AST compiler verification, <5ms)
-             Enforcing 22 code-level invariants (algorithmic, concurrency, testing, security).
+             - 22 code-level AST invariants (algorithmic, concurrency, testing, security).
+             - Inter-statement Def-Use chain dataflow tracking (PRB-E202, PRB-E303).
+             - Multi-language Polyglot Sentinel for JS/TS, C/C++, and Go.
   - Sieve 2: Algebraic Metamorphic Oracle (Dynamic symmetry & idempotence, <50ms)
-             Enforcing algebraic invariants (PRB-E403).
+             - Algebraic invariants (PRB-E403).
   - Sieve 3: CoT-Action Causal Alignment Gate (Dialogue trajectory sentinel, <20ms)
-             Enforcing 9 interaction invariants (amnesia, sycophancy, truncation, injection, ghost tooling).
+             - Multi-turn temporal constraint ledger (Agent-C / TSM pattern).
+             - 9 interaction invariants (amnesia, sycophancy, truncation, injection, ghost tooling).
 
 Total judgment latency < 100ms. Returns strict Boolean predicates and zero-hallucination verdicts.
 """
@@ -25,6 +28,9 @@ from .ast_interceptor import audit_source_code, DiagnosticFinding
 from .metamorphic_oracle import MetamorphicOracleEngine, MetamorphicViolation
 from .context_distiller_bridge import TriAnchorSlice
 from .dialogue_oracle import DialogueOracle, DialogueFinding
+from .def_use_tracker import analyze_dataflow, DataflowFinding
+from .polyglot_sentinel import PolyglotSentinel, PolyglotFinding
+from .temporal_constraint_ledger import TemporalConstraintLedger, LedgerViolation
 
 
 @dataclass
@@ -70,12 +76,14 @@ class TriSieveOracle:
     def __init__(self):
         self.metamorphic_engine = MetamorphicOracleEngine()
         self.dialogue_oracle = DialogueOracle()
+        self.polyglot_sentinel = PolyglotSentinel()
+        self.temporal_ledger = TemporalConstraintLedger()
 
     def judge_mutation(
         self,
         candidate_code: str,
         causal_slice: Optional[TriAnchorSlice] = None,
-        file_path: str = "<source.py>",
+        file_path: str = "source.py",
         user_intent: Optional[str] = None,
         reasoning_claims: Optional[str] = None,
         action_calls: Optional[List[Any]] = None,
@@ -94,15 +102,37 @@ class TriSieveOracle:
         counterexamples: List[str] = []
         guidance: List[str] = []
 
+        clean_path = file_path.strip("<>")
+        ext = Path(clean_path).suffix.lower()
+        is_python = (ext in (".py", "") or file_path in ("source.py", "<source.py>", "<memory>", "<source>"))
+
         # =========================================================================
-        # SIEVE 1: Structural & Anti-Gaming Gate (AST Compiler, < 5ms)
+        # SIEVE 1: Structural, Dataflow & Anti-Gaming Gate (AST / Polyglot, < 10ms)
         # =========================================================================
-        ast_results: List[DiagnosticFinding] = audit_source_code(candidate_code, file_path=file_path)
-        for finding in ast_results:
-            msg = f"[{finding.code}] {finding.name} at line {finding.line_number}: {finding.message}"
-            sieve1_findings.append(msg)
-            if finding.remediation_suggestion:
-                guidance.append(f"Sieve 1 Fix ({finding.code}): {finding.remediation_suggestion}")
+        if is_python:
+            # 1.1 Python AST Compiler Checks
+            ast_results: List[DiagnosticFinding] = audit_source_code(candidate_code, file_path=file_path)
+            for finding in ast_results:
+                msg = f"[{finding.code}] {finding.name} at line {finding.line_number}: {finding.message}"
+                sieve1_findings.append(msg)
+                if finding.remediation_suggestion:
+                    guidance.append(f"Sieve 1 Fix ({finding.code}): {finding.remediation_suggestion}")
+
+            # 1.2 Inter-Statement Def-Use Dataflow Tracking
+            dataflow_findings: List[DataflowFinding] = analyze_dataflow(candidate_code, file_path=file_path)
+            for df in dataflow_findings:
+                msg = f"[{df.code}] {df.name} at line {df.line_number}: {df.message}"
+                sieve1_findings.append(msg)
+                if df.remediation_suggestion:
+                    guidance.append(f"Sieve 1 Dataflow Fix ({df.code}): {df.remediation_suggestion}")
+        else:
+            # 1.3 Multi-Language Polyglot Sentinel
+            poly_findings: List[PolyglotFinding] = self.polyglot_sentinel.audit_source(candidate_code, file_path=file_path)
+            for pf in poly_findings:
+                msg = f"[{pf.code}] {pf.name} ({pf.language}) at line {pf.line_number}: {pf.message}"
+                sieve1_findings.append(msg)
+                if pf.remediation_suggestion:
+                    guidance.append(f"Sieve 1 Polyglot Fix ({pf.code}): {pf.remediation_suggestion}")
 
         sieve1_pass = len(sieve1_findings) == 0
 
@@ -110,7 +140,7 @@ class TriSieveOracle:
         # SIEVE 2: Algebraic Metamorphic Oracle (Dynamic Invariants, < 50ms)
         # =========================================================================
         sieve2_pass = True
-        if sieve1_pass:
+        if sieve1_pass and is_python:
             violations = self.metamorphic_engine.verify_source_algebra(candidate_code)
             for v in violations:
                 sieve2_violations.append(
@@ -123,15 +153,23 @@ class TriSieveOracle:
             sieve2_pass = len(sieve2_violations) == 0
 
         # =========================================================================
-        # SIEVE 3: CoT-Action Causal Faithfulness & Dialogue Gate (< 20ms)
+        # SIEVE 3: CoT-Action Causal Faithfulness & Temporal Ledger Gate (< 20ms)
         # =========================================================================
-        # Normalize causal evidence from slice or explicit arguments
         norm_intent = user_intent or (causal_slice.user_intent if causal_slice else "")
         norm_reasoning = reasoning_claims or (causal_slice.reasoning_claims if causal_slice else "")
         norm_calls = action_calls or (causal_slice.action_calls if causal_slice else [])
         norm_results = action_results or (getattr(causal_slice, "action_results", []) if causal_slice else [])
 
-        # Normalize action_calls dictionaries if they are raw strings
+        # 3.1 Temporal Constraint Ledger Tracking
+        if norm_intent:
+            self.temporal_ledger.feed_turn(1, norm_intent)
+            mutated_files = causal_slice.mutated_files if causal_slice else []
+            temporal_violations = self.temporal_ledger.validate_candidate(candidate_code, mutated_files=mutated_files)
+            for tv in temporal_violations:
+                sieve3_discrepancies.append(f"[PRB-E001] Temporal Ledger Violation: {tv.violation_message}")
+                guidance.append(f"Sieve 3 Temporal Fix: {tv.remediation_suggestion}")
+
+        # 3.2 Dialogue Oracle Trajectory Checks
         structured_calls: List[Dict[str, Any]] = []
         for call in norm_calls:
             if isinstance(call, dict):
@@ -139,7 +177,6 @@ class TriSieveOracle:
             else:
                 structured_calls.append({"tool_name": str(call), "args": {}})
 
-        # Run Dialogue Oracle on Track 1 Pathologies
         if norm_intent or norm_reasoning or structured_calls or stop_reason:
             diag_findings = self.dialogue_oracle.audit_trajectory(
                 user_intent=norm_intent,
@@ -154,7 +191,7 @@ class TriSieveOracle:
                 if df.remediation_suggestion:
                     guidance.append(f"Sieve 3 Fix ({df.code}): {df.remediation_suggestion}")
 
-        # Check Forbidden Action Guard (PRB-E102) if mutated_files present
+        # Check Forbidden Action Guard (PRB-E102)
         if causal_slice and causal_slice.mutated_files:
             lower_intent = norm_intent.lower()
             if "do not modify" in lower_intent or "不要修改" in lower_intent or "严禁改动" in lower_intent:

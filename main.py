@@ -152,7 +152,8 @@ def cmd_tensor(args) -> int:
 
 def cmd_audit(args) -> int:
     """Audits a Python source file or snippet for pathologies."""
-    target_path = Path(args.target)
+    target_str = getattr(args, "path_opt", None) or getattr(args, "target", None) or "."
+    target_path = Path(target_str)
     if not target_path.exists():
         print(f"❌ Target path does not exist: {target_path}")
         return 1
@@ -533,7 +534,8 @@ def build_cli() -> argparse.ArgumentParser:
     p_tensor.set_defaults(func=cmd_tensor)
 
     p_audit = subparsers.add_parser("audit", parents=[parent], help="Audit code for pathologies")
-    p_audit.add_argument("target", help="File or directory to audit")
+    p_audit.add_argument("target", nargs="?", default=None, help="File or directory to audit")
+    p_audit.add_argument("--path", "-p", dest="path_opt", help="Target path to audit (alias for positional target)")
     p_audit.set_defaults(func=cmd_audit)
 
     p_federated = subparsers.add_parser("federated", parents=[parent], help="Run multi-tool federated audit")

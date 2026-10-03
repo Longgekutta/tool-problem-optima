@@ -349,6 +349,15 @@ class PathologyASTVisitor(ast.NodeVisitor):
         elif isinstance(node.func, ast.Attribute):
             func_name = node.func.attr
 
+        # Count test assertions from unittest assertions (self.assertEqual, self.assertTrue, etc.)
+        if isinstance(node.func, ast.Attribute) and node.func.attr.startswith("assert"):
+            self._current_function_assertions += 1
+            has_msg = any(kw.arg == "msg" for kw in getattr(node, "keywords", [])) or (len(node.args) >= 3 and node.func.attr in ("assertEqual", "assertNotEqual", "assertIn", "assertNotIn")) or (len(node.args) >= 2 and node.func.attr in ("assertTrue", "assertFalse", "assertIsNone", "assertIsNotNone"))
+            if not has_msg:
+                self._current_function_bare_assertions += 1
+        elif isinstance(node.func, ast.Name) and (node.func.id.startswith("assert_") or node.func.id == "raises"):
+            self._current_function_assertions += 1
+
         is_test_ctx = self._current_function_name and (self._current_function_name.startswith("test_") or self._current_function_name.endswith("_test"))
         if is_test_ctx and func_name in ("sleep",):
             self.findings.append(DiagnosticFinding(

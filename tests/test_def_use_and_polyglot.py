@@ -100,6 +100,24 @@ def read_data(path):
         violations = self.ledger.validate_candidate("import requests\n", current_turn=6)
         self.assertEqual(len(violations), 0)
 
+    def test_temporal_ledger_generalized_mandates(self):
+        """Generalized constraint phrasing without brittle exact keyword matching."""
+        ledger = TemporalConstraintLedger()
+        # Chinese phrasing without standard keyword:
+        ledger.feed_turn(1, "这个项目禁止引入任何第三方库，只能用纯内置模块！")
+        self.assertIn("ZERO_DEPENDENCY", ledger.constraints)
+        self.assertEqual(ledger.constraints["ZERO_DEPENDENCY"].status, "ACTIVE")
+
+        violations = ledger.validate_candidate("import httpx\n", current_turn=10)
+        self.assertEqual(len(violations), 1)
+
+        # Chinese relaxation:
+        ledger.feed_turn(11, "解除第三方依赖限制，现在可以使用外部网络包了。")
+        self.assertEqual(ledger.constraints["ZERO_DEPENDENCY"].status, "RELAXED")
+        violations_after = ledger.validate_candidate("import httpx\n", current_turn=12)
+        self.assertEqual(len(violations_after), 0)
+
+
     # =========================================================================
     # 3. Polyglot Multi-Language Sentinel
     # =========================================================================

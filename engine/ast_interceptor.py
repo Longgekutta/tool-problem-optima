@@ -35,7 +35,7 @@ import ast
 import re
 from pathlib import Path
 from dataclasses import dataclass
-from typing import List, Optional, Set, Tuple
+from typing import List, Optional, Set, Tuple, Dict, Any
 
 
 import sys
@@ -100,14 +100,17 @@ class DiagnosticFinding:
 
 
 class PathologyASTVisitor(ast.NodeVisitor):
-    def __init__(self, file_path: str, source_lines: List[str]):
+    def __init__(self, file_path: str, source_lines: List[str], local_funcs: Optional[Dict[str, Dict[str, Any]]] = None):
         self.file_path = file_path
         self.source_lines = source_lines
         self.findings: List[DiagnosticFinding] = []
+        self.local_funcs = local_funcs or {}
 
         self._current_function_name: Optional[str] = None
         self._current_function_assertions: int = 0
         self._current_function_bare_assertions: int = 0
+        self._current_function_sharp_assertions: int = 0
+        self._current_function_weak_assertions: int = 0
         self._in_loop: int = 0
         self._lock_orderings: List[Tuple[str, str, int]] = []
 
@@ -120,10 +123,14 @@ class PathologyASTVisitor(ast.NodeVisitor):
         prev_fn = self._current_function_name
         prev_asserts = self._current_function_assertions
         prev_bare_asserts = self._current_function_bare_assertions
+        prev_sharp_asserts = self._current_function_sharp_assertions
+        prev_weak_asserts = self._current_function_weak_assertions
 
         self._current_function_name = node.name
         self._current_function_assertions = 0
         self._current_function_bare_assertions = 0
+        self._current_function_sharp_assertions = 0
+        self._current_function_weak_assertions = 0
 
         self.generic_visit(node)
 
@@ -149,6 +156,17 @@ class PathologyASTVisitor(ast.NodeVisitor):
                     snippet=self._get_snippet(node.lineno),
                     remediation_suggestion="Add explicit invariant assertions verifying system state, return values, or side effects."
                 ))
+            elif self._current_function_assertions > 0 and self._current_function_sharp_assertions == 0:
+                self.findings.append(DiagnosticFinding(
+                    code="PRB-E105",
+                    name="Goodhart's Law Exploitation (Weak Assertion / Trivial Oracle)",
+                    file_path=self.file_path,
+                    line_number=node.lineno,
+                    column=node.col_offset,
+                    message=f"Test function '{node.name}' relies entirely on {self._current_function_weak_assertions} weak assertion(s) (e.g. 'is not None', 'len > 0', 'isinstance') without verifying concrete state or values.",
+                    snippet=self._get_snippet(node.lineno),
+                    remediation_suggestion="Replace weak existential assertions with sharp value equalities (e.g. assert result == expected) or formal invariants."
+                ))
 
             # PRB-E402: Assertion Roulette (>= 3 assertions, all bare without messages)
             if self._current_function_assertions >= 3 and self._current_function_bare_assertions == self._current_function_assertions:
@@ -166,6 +184,8 @@ class PathologyASTVisitor(ast.NodeVisitor):
         self._current_function_name = prev_fn
         self._current_function_assertions = prev_asserts
         self._current_function_bare_assertions = prev_bare_asserts
+        self._current_function_sharp_assertions = prev_sharp_asserts
+        self._current_function_weak_assertions = prev_weak_asserts
 
     visit_AsyncFunctionDef = visit_FunctionDef
 
@@ -255,10 +275,58 @@ class PathologyASTVisitor(ast.NodeVisitor):
                                 return True
         return False
 
+    def _is_weak_assertion(self, test_node: ast.AST) -> bool:
+        """
+        Detects weak / trivial assertion smells:
+          - is not None / != None / is None / == None
+          - len(...) > 0 / len(...) >= 1 / len(...) != 0
+          - isinstance(..., ...)
+          - Bare Name truthiness: assert x
+          - bool(x)
+        """
+        # 1. Bare identifier / truthiness (e.g. assert res)
+        if isinstance(test_node, ast.Name):
+            return True
+
+        # 2. bool(x)
+        if isinstance(test_node, ast.Call) and isinstance(test_node.func, ast.Name) and test_node.func.id == "bool":
+            return True
+
+        # 3. isinstance(..., ...)
+        if isinstance(test_node, ast.Call) and isinstance(test_node.func, ast.Name) and test_node.func.id == "isinstance":
+            return True
+
+        # 4. Compares: 'is not None', 'len(x) > 0'
+        if isinstance(test_node, ast.Compare) and len(test_node.ops) == 1:
+            op = test_node.ops[0]
+            comp = test_node.comparators[0]
+            left = test_node.left
+
+            # Checks against None
+            if isinstance(comp, ast.Constant) and comp.value is None:
+                if isinstance(op, (ast.IsNot, ast.NotEq, ast.Is, ast.Eq)):
+                    return True
+            if isinstance(left, ast.Constant) and left.value is None:
+                if isinstance(op, (ast.IsNot, ast.NotEq, ast.Is, ast.Eq)):
+                    return True
+
+            # Checks len(x) > 0 or len(x) >= 1 or len(x) != 0
+            is_left_len = isinstance(left, ast.Call) and isinstance(left.func, ast.Name) and left.func.id == "len"
+            if is_left_len and isinstance(comp, ast.Constant) and comp.value in (0, 1):
+                if isinstance(op, (ast.Gt, ast.GtE, ast.NotEq)):
+                    return True
+
+        return False
+
     def visit_Assert(self, node: ast.Assert):
         self._current_function_assertions += 1
         if node.msg is None:
             self._current_function_bare_assertions += 1
+
+        if self._is_weak_assertion(node.test):
+            self._current_function_weak_assertions += 1
+        else:
+            self._current_function_sharp_assertions += 1
 
         # PRB-E104: Trivial assertion assert True or assert 1
         if isinstance(node.test, ast.Constant) and bool(node.test.value) is True:
@@ -362,8 +430,58 @@ class PathologyASTVisitor(ast.NodeVisitor):
             has_msg = any(kw.arg == "msg" for kw in getattr(node, "keywords", [])) or (len(node.args) >= 3 and node.func.attr in ("assertEqual", "assertNotEqual", "assertIn", "assertNotIn")) or (len(node.args) >= 2 and node.func.attr in ("assertTrue", "assertFalse", "assertIsNone", "assertIsNotNone"))
             if not has_msg:
                 self._current_function_bare_assertions += 1
+
+            weak_attrs = ("assertIsNotNone", "assertIsNone", "assertIsInstance")
+            if node.func.attr in weak_attrs or (node.func.attr == "assertTrue" and node.args and isinstance(node.args[0], ast.Name)):
+                self._current_function_weak_assertions += 1
+            else:
+                self._current_function_sharp_assertions += 1
         elif isinstance(node.func, ast.Name) and (node.func.id.startswith("assert_") or node.func.id == "raises"):
             self._current_function_assertions += 1
+            self._current_function_sharp_assertions += 1
+
+        # PRB-E109: Interface Contract & Signature Drift (Local Function Call Mismatch)
+        if isinstance(node.func, ast.Name) and node.func.id in self.local_funcs:
+            fn_meta = self.local_funcs[node.func.id]
+            if self._current_function_name != node.func.id:
+                num_pos_passed = len(node.args)
+                kw_names_passed = {kw.arg for kw in node.keywords if kw.arg is not None}
+                total_passed = num_pos_passed + len(kw_names_passed)
+                if total_passed < fn_meta["min_args"]:
+                    self.findings.append(DiagnosticFinding(
+                        code="PRB-E109",
+                        name="Interface & Contract Drift (Missing Required Argument)",
+                        file_path=self.file_path,
+                        line_number=node.lineno,
+                        column=node.col_offset,
+                        message=f"Call to '{node.func.id}' provides {total_passed} arguments, but definition requires at least {fn_meta['min_args']}.",
+                        snippet=self._get_snippet(node.lineno),
+                        remediation_suggestion=f"Provide all required arguments according to '{node.func.id}' signature."
+                    ))
+                elif not fn_meta["has_varargs"] and num_pos_passed > fn_meta["max_args"]:
+                    self.findings.append(DiagnosticFinding(
+                        code="PRB-E109",
+                        name="Interface & Contract Drift (Excess Positional Arguments)",
+                        file_path=self.file_path,
+                        line_number=node.lineno,
+                        column=node.col_offset,
+                        message=f"Call to '{node.func.id}' provides {num_pos_passed} positional arguments, exceeding maximum permitted ({fn_meta['max_args']}).",
+                        snippet=self._get_snippet(node.lineno),
+                        remediation_suggestion=f"Align call arguments with '{node.func.id}' signature."
+                    ))
+                elif not fn_meta["has_kwargs"]:
+                    unknown_kws = kw_names_passed - fn_meta["all_arg_names"]
+                    if unknown_kws:
+                        self.findings.append(DiagnosticFinding(
+                            code="PRB-E109",
+                            name="Interface & Contract Drift (Unknown Keyword Argument)",
+                            file_path=self.file_path,
+                            line_number=node.lineno,
+                            column=node.col_offset,
+                            message=f"Call to '{node.func.id}' passed unexpected keyword argument(s): {sorted(list(unknown_kws))}.",
+                            snippet=self._get_snippet(node.lineno),
+                            remediation_suggestion=f"Ensure keyword arguments match '{node.func.id}' signature: {sorted(list(fn_meta['all_arg_names']))}."
+                        ))
 
         is_test_ctx = self._current_function_name and (self._current_function_name.startswith("test_") or self._current_function_name.endswith("_test"))
         if is_test_ctx and func_name in ("sleep",):
@@ -621,7 +739,80 @@ class PathologyASTVisitor(ast.NodeVisitor):
             seen_pairs.add((l1, l2))
 
 
-def audit_source_code(source: str, file_path: str = "<memory>") -> List[DiagnosticFinding]:
+def audit_contract_drift(original_code: str, candidate_code: str, file_path: str = "") -> List[DiagnosticFinding]:
+    """
+    Detects public interface and contract drift (breaking changes) between versions:
+      - Removing public functions/methods
+      - Removing public parameters from function signatures
+      - Adding required (non-default) positional parameters without backward compatibility
+    Zero external dependencies.
+    """
+    findings: List[DiagnosticFinding] = []
+    try:
+        orig_tree = ast.parse(original_code)
+        cand_tree = ast.parse(candidate_code)
+    except Exception:
+        return []
+
+    def get_public_signatures(tree: ast.AST) -> Dict[str, Dict[str, Any]]:
+        sigs: Dict[str, Dict[str, Any]] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if not node.name.startswith("_") and not node.name.startswith("test_"):
+                    args = node.args
+                    pos_args = [a.arg for a in args.args if a.arg not in ("self", "cls")]
+                    num_defaults = len(args.defaults)
+                    num_required = max(0, len(pos_args) - num_defaults)
+                    sigs[node.name] = {
+                        "lineno": node.lineno,
+                        "pos_args": pos_args,
+                        "num_required": num_required,
+                        "kwonly_args": [a.arg for a in args.kwonlyargs],
+                        "has_varargs": bool(args.vararg),
+                        "has_kwargs": bool(args.kwarg)
+                    }
+        return sigs
+
+    orig_sigs = get_public_signatures(orig_tree)
+    cand_sigs = get_public_signatures(cand_tree)
+
+    for fn_name, o_sig in orig_sigs.items():
+        if fn_name in cand_sigs:
+            c_sig = cand_sigs[fn_name]
+            o_pos = o_sig["pos_args"]
+            c_pos = c_sig["pos_args"]
+
+            # 1. Parameter deletion
+            deleted = [p for p in o_pos if p not in c_pos]
+            if deleted:
+                findings.append(DiagnosticFinding(
+                    code="PRB-E109",
+                    name="Interface & Contract Drift (Parameter Removal)",
+                    file_path=file_path,
+                    line_number=c_sig["lineno"],
+                    column=0,
+                    message=f"Public function '{fn_name}' deleted parameter(s) {deleted}, breaking existing callers.",
+                    snippet=f"def {fn_name}(...)",
+                    remediation_suggestion="Preserve parameter backward compatibility or provide default fallback values."
+                ))
+
+            # 2. Added new required parameters without default
+            if c_sig["num_required"] > o_sig["num_required"] and not deleted:
+                added_required = c_pos[o_sig["num_required"]:c_sig["num_required"]]
+                findings.append(DiagnosticFinding(
+                    code="PRB-E109",
+                    name="Interface & Contract Drift (Required Parameter Addition)",
+                    file_path=file_path,
+                    line_number=c_sig["lineno"],
+                    column=0,
+                    message=f"Public function '{fn_name}' added non-default parameter(s) {added_required}, breaking existing positional calls.",
+                    snippet=f"def {fn_name}(...)",
+                    remediation_suggestion="Provide default values for new parameters to preserve backward compatibility."
+                ))
+    return findings
+
+
+def audit_source_code(source: str, file_path: str = "<memory>", previous_source: Optional[str] = None) -> List[DiagnosticFinding]:
     """Parses Python source code and runs the comprehensive Pathology AST Visitor."""
     try:
         tree = ast.parse(source)
@@ -637,8 +828,33 @@ def audit_source_code(source: str, file_path: str = "<memory>") -> List[Diagnost
             remediation_suggestion="Fix truncated tokens or syntax errors to ensure well-formed Abstract Syntax Tree."
         )]
 
+    # Collect local function definitions for call-contract verification
+    local_funcs: Dict[str, Dict[str, Any]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            pos_args = [a.arg for a in node.args.args if a.arg not in ("self", "cls")]
+            num_defaults = len(node.args.defaults)
+            min_args = max(0, len(pos_args) - num_defaults)
+            max_args = len(pos_args)
+            has_varargs = bool(node.args.vararg)
+            has_kwargs = bool(node.args.kwarg)
+            all_arg_names = set(pos_args) | {a.arg for a in node.args.kwonlyargs}
+            local_funcs[node.name] = {
+                "min_args": min_args,
+                "max_args": max_args,
+                "has_varargs": has_varargs,
+                "has_kwargs": has_kwargs,
+                "all_arg_names": all_arg_names,
+                "lineno": node.lineno
+            }
+
     lines = source.splitlines()
-    visitor = PathologyASTVisitor(file_path=file_path, source_lines=lines)
+    visitor = PathologyASTVisitor(file_path=file_path, source_lines=lines, local_funcs=local_funcs)
     visitor.visit(tree)
     visitor.post_analysis()
-    return visitor.findings
+
+    findings = list(visitor.findings)
+    if previous_source:
+        findings.extend(audit_contract_drift(previous_source, source, file_path=file_path))
+
+    return findings

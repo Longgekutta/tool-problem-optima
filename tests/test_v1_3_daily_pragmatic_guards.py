@@ -93,6 +93,29 @@ class TestV13PragmaticGuards(unittest.TestCase):
         codes = [f.code for f in findings]
         self.assertIn("PRB-E108", codes, "Must flag bare except with continue with PRB-E108")
 
+    def test_alias_bound_mutable_default_caught_via_symbol_resolution(self):
+        """Catches mutable default argument bound through an alias variable defined earlier."""
+        code = "DEFAULT_REGISTRY = []\ndef register_handler(h, registry=DEFAULT_REGISTRY):\n    registry.append(h)\n"
+        findings = audit_source_code(code)
+        codes = [f.code for f in findings]
+        self.assertIn("PRB-E109", codes, "Must flag alias-bound mutable default argument with PRB-E109")
+        messages = [f.message for f in findings]
+        self.assertTrue(any("bound via alias 'DEFAULT_REGISTRY'" in m for m in messages), "Message must detail the alias binding")
+
+    def test_alias_bound_literal_comparison_caught_via_symbol_resolution(self):
+        """Catches 'is' comparison with a scalar literal defined earlier as a constant."""
+        code = "ADMIN_ROLE = 'administrator'\ndef check_role(role):\n    if role is ADMIN_ROLE:\n        return True\n    return False\n"
+        findings = audit_source_code(code)
+        codes = [f.code for f in findings]
+        self.assertIn("PRB-E202", codes, "Must flag alias-bound literal identity comparison with PRB-E202")
+
+    def test_unawaited_stdlib_asyncio_sleep_caught(self):
+        """Catches unawaited stdlib async calls like asyncio.sleep()."""
+        code = "import asyncio\ndef run_worker():\n    asyncio.sleep(1)\n"
+        findings = audit_source_code(code)
+        codes = [f.code for f in findings]
+        self.assertIn("PRB-E109", codes, "Must flag unawaited asyncio.sleep with PRB-E109")
+
 
 if __name__ == "__main__":
     unittest.main()

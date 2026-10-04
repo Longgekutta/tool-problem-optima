@@ -100,11 +100,12 @@ class DiagnosticFinding:
 
 
 class PathologyASTVisitor(ast.NodeVisitor):
-    def __init__(self, file_path: str, source_lines: List[str], local_funcs: Optional[Dict[str, Dict[str, Any]]] = None):
+    def __init__(self, file_path: str, source_lines: List[str], local_funcs: Optional[Dict[str, Dict[str, Any]]] = None, module_constants: Optional[Dict[str, Dict[str, Any]]] = None):
         self.file_path = file_path
         self.source_lines = source_lines
         self.findings: List[DiagnosticFinding] = []
         self.local_funcs = local_funcs or {}
+        self.module_constants = module_constants or {}
 
         self._current_function_name: Optional[str] = None
         self._current_function_assertions: int = 0
@@ -138,10 +139,16 @@ class PathologyASTVisitor(ast.NodeVisitor):
         all_defaults = list(node.args.defaults) + [d for d in getattr(node.args, "kw_defaults", []) if d is not None]
         for d in all_defaults:
             is_mutable = False
+            alias_note = ""
             if isinstance(d, (ast.List, ast.Dict, ast.Set)):
                 is_mutable = True
             elif isinstance(d, ast.Call) and isinstance(d.func, ast.Name) and d.func.id in ("list", "dict", "set"):
                 is_mutable = True
+            elif isinstance(d, ast.Name):
+                meta = self.module_constants.get(d.id)
+                if meta and meta.get("is_mutable"):
+                    is_mutable = True
+                    alias_note = f" (bound via alias '{d.id}')"
             if is_mutable:
                 self.findings.append(DiagnosticFinding(
                     code="PRB-E109",
@@ -149,7 +156,7 @@ class PathologyASTVisitor(ast.NodeVisitor):
                     file_path=self.file_path,
                     line_number=d.lineno,
                     column=d.col_offset,
-                    message=f"Function '{node.name}' uses mutable default argument. State will persist across invocations.",
+                    message=f"Function '{node.name}' uses mutable default argument{alias_note}. State will persist across invocations.",
                     snippet=self._get_snippet(d.lineno),
                     remediation_suggestion="Use 'None' as default value and initialize defensively inside the function body (e.g. 'if arg is None: arg = []')."
                 ))
@@ -435,8 +442,12 @@ class PathologyASTVisitor(ast.NodeVisitor):
 
             # PRB-E202: Comparison using 'is' with scalar literal (SyntaxWarning / F632)
             if isinstance(op, (ast.Is, ast.IsNot)):
-                left_is_lit = isinstance(node.left, ast.Constant) and not (node.left.value is None or isinstance(node.left.value, bool))
-                comp_is_lit = isinstance(comp, ast.Constant) and not (comp.value is None or isinstance(comp.value, bool))
+                left_meta = self.module_constants.get(node.left.id) if isinstance(node.left, ast.Name) else None
+                comp_meta = self.module_constants.get(comp.id) if isinstance(comp, ast.Name) else None
+                left_is_lit = (isinstance(node.left, ast.Constant) and not (node.left.value is None or isinstance(node.left.value, bool))) or \
+                              bool(left_meta and left_meta.get("is_scalar_literal"))
+                comp_is_lit = (isinstance(comp, ast.Constant) and not (comp.value is None or isinstance(comp.value, bool))) or \
+                              bool(comp_meta and comp_meta.get("is_scalar_literal"))
                 if left_is_lit or comp_is_lit:
                     self.findings.append(DiagnosticFinding(
                         code="PRB-E202",
@@ -669,16 +680,28 @@ class PathologyASTVisitor(ast.NodeVisitor):
         # PRB-E109: Unawaited coroutine call in expression statement
         if isinstance(node.value, ast.Call):
             call_fn = None
+            is_async_call = False
             if isinstance(node.value.func, ast.Name):
                 call_fn = node.value.func.id
-            if call_fn and call_fn in self.local_funcs and self.local_funcs[call_fn].get("is_async"):
+                if call_fn in self.local_funcs and self.local_funcs[call_fn].get("is_async"):
+                    is_async_call = True
+            elif isinstance(node.value.func, ast.Attribute):
+                attr_name = node.value.func.attr
+                val = node.value.func.value
+                val_id = getattr(val, "id", "")
+                if (val_id == "asyncio" and attr_name in ("sleep", "wait", "wait_for", "gather")) or \
+                   (val_id == "aiofiles" and attr_name == "open"):
+                    call_fn = f"{val_id}.{attr_name}"
+                    is_async_call = True
+
+            if is_async_call and call_fn:
                 self.findings.append(DiagnosticFinding(
                     code="PRB-E109",
                     name="Interface & Contract Drift (Unawaited Coroutine Call)",
                     file_path=self.file_path,
                     line_number=node.lineno,
                     column=node.col_offset,
-                    message=f"Call to async coroutine function '{call_fn}' is not awaited. Coroutine will never execute.",
+                    message=f"Call to async coroutine '{call_fn}' is not awaited. Coroutine will never execute.",
                     snippet=self._get_snippet(node.lineno),
                     remediation_suggestion=f"Prepend 'await {call_fn}(...)' or schedule via asyncio.create_task()."
                 ))
@@ -935,8 +958,30 @@ def audit_source_code(source: str, file_path: str = "<memory>", previous_source:
                 "lineno": node.lineno
             }
 
+    # Pass 1: Collect module-level constant & mutability bindings (Symbol Resolution)
+    module_constants: Dict[str, Dict[str, Any]] = {}
+    for stmt in tree.body:
+        if isinstance(stmt, ast.Assign):
+            val = stmt.value
+            is_mut = False
+            if isinstance(val, (ast.List, ast.Dict, ast.Set)):
+                is_mut = True
+            elif isinstance(val, ast.Call) and isinstance(val.func, ast.Name) and val.func.id in ("list", "dict", "set"):
+                is_mut = True
+
+            is_scalar_lit = False
+            if isinstance(val, ast.Constant) and not (val.value is None or isinstance(val.value, bool)):
+                is_scalar_lit = True
+
+            for tgt in stmt.targets:
+                if isinstance(tgt, ast.Name):
+                    module_constants[tgt.id] = {
+                        "is_mutable": is_mut,
+                        "is_scalar_literal": is_scalar_lit
+                    }
+
     lines = source.splitlines()
-    visitor = PathologyASTVisitor(file_path=file_path, source_lines=lines, local_funcs=local_funcs)
+    visitor = PathologyASTVisitor(file_path=file_path, source_lines=lines, local_funcs=local_funcs, module_constants=module_constants)
     visitor.visit(tree)
     visitor.post_analysis()
 

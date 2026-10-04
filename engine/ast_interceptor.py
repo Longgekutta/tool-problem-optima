@@ -134,6 +134,26 @@ class PathologyASTVisitor(ast.NodeVisitor):
 
         self.generic_visit(node)
 
+        # PRB-E109: Leaky Abstraction: Mutable Default Argument (Flake8 B006 / Ruff B006)
+        all_defaults = list(node.args.defaults) + [d for d in getattr(node.args, "kw_defaults", []) if d is not None]
+        for d in all_defaults:
+            is_mutable = False
+            if isinstance(d, (ast.List, ast.Dict, ast.Set)):
+                is_mutable = True
+            elif isinstance(d, ast.Call) and isinstance(d.func, ast.Name) and d.func.id in ("list", "dict", "set"):
+                is_mutable = True
+            if is_mutable:
+                self.findings.append(DiagnosticFinding(
+                    code="PRB-E109",
+                    name="Leaky Abstraction & State Space Explosion (Mutable Default Argument)",
+                    file_path=self.file_path,
+                    line_number=d.lineno,
+                    column=d.col_offset,
+                    message=f"Function '{node.name}' uses mutable default argument. State will persist across invocations.",
+                    snippet=self._get_snippet(d.lineno),
+                    remediation_suggestion="Use 'None' as default value and initialize defensively inside the function body (e.g. 'if arg is None: arg = []')."
+                ))
+
         # Check test functions (only in test files, test directories, or memory test snippets)
         is_test_file = True
         if self.file_path and self.file_path != "<memory>":
@@ -328,6 +348,19 @@ class PathologyASTVisitor(ast.NodeVisitor):
         else:
             self._current_function_sharp_assertions += 1
 
+        # PRB-E104: Asserting a non-empty tuple: assert (cond, "msg") is always truthy
+        if isinstance(node.test, ast.Tuple) and len(node.test.elts) > 0:
+            self.findings.append(DiagnosticFinding(
+                code="PRB-E104",
+                name="Tautological Verification (Tuple Assertion Trap)",
+                file_path=self.file_path,
+                line_number=node.lineno,
+                column=node.col_offset,
+                message="Asserting a non-empty tuple (assert (cond, msg)) is always truthy in Python. Use 'assert cond, msg' instead.",
+                snippet=self._get_snippet(node.lineno),
+                remediation_suggestion="Separate condition and failure message with a comma without enclosing parentheses: 'assert cond, msg'."
+            ))
+
         # PRB-E104: Trivial assertion assert True or assert 1
         if isinstance(node.test, ast.Constant) and bool(node.test.value) is True:
             self.findings.append(DiagnosticFinding(
@@ -400,6 +433,22 @@ class PathologyASTVisitor(ast.NodeVisitor):
                         remediation_suggestion="Use 'math.isclose(a, b, rel_tol=1e-9)' or 'abs(a - b) < epsilon' for float comparisons."
                     ))
 
+            # PRB-E202: Comparison using 'is' with scalar literal (SyntaxWarning / F632)
+            if isinstance(op, (ast.Is, ast.IsNot)):
+                left_is_lit = isinstance(node.left, ast.Constant) and not (node.left.value is None or isinstance(node.left.value, bool))
+                comp_is_lit = isinstance(comp, ast.Constant) and not (comp.value is None or isinstance(comp.value, bool))
+                if left_is_lit or comp_is_lit:
+                    self.findings.append(DiagnosticFinding(
+                        code="PRB-E202",
+                        name="Silent Nullability & Type Confusion (Literal Identity Comparison)",
+                        file_path=self.file_path,
+                        line_number=node.lineno,
+                        column=node.col_offset,
+                        message="Comparing with literal via 'is'/'is not' violates Python identity semantics and raises SyntaxWarning.",
+                        snippet=self._get_snippet(node.lineno),
+                        remediation_suggestion="Use '==' or '!=' when comparing with scalar literal values; reserve 'is' for None, True, False singletons."
+                    ))
+
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call):
@@ -425,6 +474,23 @@ class PathologyASTVisitor(ast.NodeVisitor):
             func_name = node.func.attr
 
         # Count test assertions from unittest assertions (self.assertEqual, self.assertTrue, etc.)
+        if func_name == "range" and len(node.args) == 1:
+            arg = node.args[0]
+            if isinstance(arg, ast.BinOp) and isinstance(arg.op, ast.Add):
+                left_is_len = isinstance(arg.left, ast.Call) and getattr(arg.left.func, "id", "") == "len"
+                right_is_one = isinstance(arg.right, ast.Constant) and arg.right.value == 1
+                if left_is_len and right_is_one:
+                    self.findings.append(DiagnosticFinding(
+                        code="PRB-E201",
+                        name="Fencepost & Off-by-One Error (range(len + 1))",
+                        file_path=self.file_path,
+                        line_number=node.lineno,
+                        column=node.col_offset,
+                        message="Using 'range(len(...) + 1)' exceeds sequence upper bound, causing IndexError during indexing.",
+                        snippet=self._get_snippet(node.lineno),
+                        remediation_suggestion="Use 'range(len(...))' or iterate directly over elements."
+                    ))
+
         if isinstance(node.func, ast.Attribute) and node.func.attr.startswith("assert"):
             self._current_function_assertions += 1
             has_msg = any(kw.arg == "msg" for kw in getattr(node, "keywords", [])) or (len(node.args) >= 3 and node.func.attr in ("assertEqual", "assertNotEqual", "assertIn", "assertNotIn")) or (len(node.args) >= 2 and node.func.attr in ("assertTrue", "assertFalse", "assertIsNone", "assertIsNotNone"))
@@ -599,6 +665,25 @@ class PathologyASTVisitor(ast.NodeVisitor):
         ))
         self.generic_visit(node)
 
+    def visit_Expr(self, node: ast.Expr):
+        # PRB-E109: Unawaited coroutine call in expression statement
+        if isinstance(node.value, ast.Call):
+            call_fn = None
+            if isinstance(node.value.func, ast.Name):
+                call_fn = node.value.func.id
+            if call_fn and call_fn in self.local_funcs and self.local_funcs[call_fn].get("is_async"):
+                self.findings.append(DiagnosticFinding(
+                    code="PRB-E109",
+                    name="Interface & Contract Drift (Unawaited Coroutine Call)",
+                    file_path=self.file_path,
+                    line_number=node.lineno,
+                    column=node.col_offset,
+                    message=f"Call to async coroutine function '{call_fn}' is not awaited. Coroutine will never execute.",
+                    snippet=self._get_snippet(node.lineno),
+                    remediation_suggestion=f"Prepend 'await {call_fn}(...)' or schedule via asyncio.create_task()."
+                ))
+        self.generic_visit(node)
+
     def visit_With(self, node: ast.With):
         # PRB-E302: Asymmetric Lock Acquisition Deadlock: nested with lock1: with lock2:
         acquired_locks: List[str] = []
@@ -625,14 +710,14 @@ class PathologyASTVisitor(ast.NodeVisitor):
         if is_bare:
             if len(node.body) == 1:
                 first = node.body[0]
-                if isinstance(first, ast.Pass) or (isinstance(first, ast.Return) and (first.value is None or isinstance(first.value, ast.Constant))):
+                if isinstance(first, (ast.Pass, ast.Continue)) or (isinstance(first, ast.Return) and (first.value is None or isinstance(first.value, ast.Constant))):
                     self.findings.append(DiagnosticFinding(
                         code="PRB-E108",
                         name="Silent Exception Swallow (Error Masking)",
                         file_path=self.file_path,
                         line_number=node.lineno,
                         column=node.col_offset,
-                        message="Broad exception caught and silently swallowed with empty pass/return, masking critical failures.",
+                        message="Broad exception caught and silently swallowed with empty pass/continue/return, masking critical failures.",
                         snippet=self._get_snippet(node.lineno),
                         remediation_suggestion="Catch specific domain exceptions, log tracebacks, and handle or re-raise gracefully."
                     ))
@@ -839,12 +924,14 @@ def audit_source_code(source: str, file_path: str = "<memory>", previous_source:
             has_varargs = bool(node.args.vararg)
             has_kwargs = bool(node.args.kwarg)
             all_arg_names = set(pos_args) | {a.arg for a in node.args.kwonlyargs}
+            is_async = isinstance(node, ast.AsyncFunctionDef)
             local_funcs[node.name] = {
                 "min_args": min_args,
                 "max_args": max_args,
                 "has_varargs": has_varargs,
                 "has_kwargs": has_kwargs,
                 "all_arg_names": all_arg_names,
+                "is_async": is_async,
                 "lineno": node.lineno
             }
 

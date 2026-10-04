@@ -18,6 +18,7 @@ Upgraded with Safe Sandbox Execution, Thread Timeout Guard, and Type-Aware Adapt
 """
 
 import sys
+import logging
 import random
 import inspect
 import concurrent.futures
@@ -358,7 +359,8 @@ class MetamorphicOracleEngine:
                     v = self._probe_adaptive_idempotence(obj)
                     if v:
                         violations.append(v)
-            except Exception:
+            except (ValueError, TypeError, AttributeError, RuntimeError) as probe_err:
+                logging.getLogger(__name__).debug("Metamorphic probe skipped for %s: %s", name, probe_err)
                 continue
 
         return violations

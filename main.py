@@ -565,10 +565,18 @@ def cmd_preflight(args) -> int:
         events = ingestor.parse_transcript(transcript_path)
         bridge = ContextDistillerBridge()
         causal_slice = bridge.distill_tri_anchor_slice(events)
-        for mf in causal_slice.mutated_files:
-            mf_p = Path(mf) if Path(mf).is_absolute() else ws_path / mf
-            if mf_p.exists() and mf_p.is_file() and mf_p not in changed_files:
-                changed_files.append(mf_p)
+        if not explicit_target:
+            valid_suffixes = (".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".c", ".cc", ".cpp", ".h", ".hpp")
+            for mf in causal_slice.mutated_files:
+                mf_p = Path(mf) if Path(mf).is_absolute() else ws_path / mf
+                if mf_p.exists() and mf_p.is_file() and mf_p.suffix.lower() in valid_suffixes:
+                    try:
+                        if getattr(args, "workspace", None):
+                            mf_p.resolve().relative_to(ws_path)
+                        if mf_p not in changed_files:
+                            changed_files.append(mf_p)
+                    except ValueError:
+                        pass
 
     # If still no changed files, default to scanning python files in current workspace
     if not changed_files:

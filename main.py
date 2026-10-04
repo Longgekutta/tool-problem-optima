@@ -33,7 +33,7 @@ from engine.diagnostic_renderer import DiagnosticRenderer
 from engine.tool_federation import ToolFederationCoordinator
 
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 
 def cmd_setup(args) -> int:
@@ -320,10 +320,19 @@ def cmd_judge(args) -> int:
     from engine.context_distiller_bridge import ContextDistillerBridge
     from engine.tri_sieve_oracle import TriSieveOracle
 
+    code_arg = getattr(args, "code", None)
+    intent_arg = getattr(args, "intent", None)
+    target_file = getattr(args, "target", None) or getattr(args, "target_pos", None)
+
     target_code = ""
-    target_file = getattr(args, "target", None)
-    if target_file and Path(target_file).exists():
+    file_path = str(target_file or "<candidate.py>")
+
+    if code_arg is not None:
+        target_code = code_arg.encode("utf-8").decode("unicode_escape") if "\\n" in code_arg else code_arg
+        file_path = "<candidate.py>"
+    elif target_file and Path(target_file).exists():
         target_code = Path(target_file).read_text(encoding="utf-8", errors="replace")
+        file_path = str(target_file)
     else:
         target_code = "def sample(): pass"
 
@@ -333,12 +342,20 @@ def cmd_judge(args) -> int:
     ingestor = TranscriptIngestor()
     t_path = Path(transcript_path_str) if transcript_path_str else ingestor.discover_active_transcript()
     if t_path and t_path.exists():
-        events = ingestor.parse_transcript(t_path)
-        bridge = ContextDistillerBridge()
-        causal_slice = bridge.distill_tri_anchor_slice(events)
+        try:
+            events = ingestor.parse_transcript(t_path)
+            bridge = ContextDistillerBridge()
+            causal_slice = bridge.distill_tri_anchor_slice(events)
+        except Exception:
+            causal_slice = None
 
     oracle = TriSieveOracle()
-    verdict = oracle.judge_mutation(target_code, causal_slice=causal_slice, file_path=str(target_file or "<candidate.py>"))
+    verdict = oracle.judge_mutation(
+        target_code,
+        causal_slice=causal_slice,
+        file_path=file_path,
+        user_intent=intent_arg
+    )
 
     if getattr(args, "json", False):
         print(json.dumps(verdict.to_dict(), indent=2, ensure_ascii=False))
@@ -751,7 +768,10 @@ def build_cli() -> argparse.ArgumentParser:
     p_transcript.set_defaults(func=cmd_transcript)
 
     p_judge = subparsers.add_parser("judge", parents=[parent], help="Run Tri-Sieve Oracle final judgment cascade")
+    p_judge.add_argument("target_pos", nargs="?", default=None, help="Target source file to judge (positional)")
     p_judge.add_argument("--target", "-t", help="Target source file to judge")
+    p_judge.add_argument("--code", "-c", help="Inline source code to judge")
+    p_judge.add_argument("--intent", "-i", help="User intent or invariant constraints to enforce")
     p_judge.add_argument("--transcript", help="Path to transcript file for CoT-Action alignment")
     p_judge.set_defaults(func=cmd_judge)
 

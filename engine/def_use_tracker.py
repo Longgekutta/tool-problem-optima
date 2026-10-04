@@ -7,12 +7,13 @@ Implements lightweight Static Single Assignment (SSA) style Definition-Use
 chain analysis on Python ASTs to detect complex dataflow pathologies across
 multiple non-adjacent statements:
 
-  1. PRB-E202: Silent Nullability (Dereferencing variable defined from .get(),
-     .find(), or None-branching without intervening guard check)
+  1. PRB-E202: Silent Nullability (Dereferencing attribute or subscript on
+     variable defined from .get(), .find(), or None-branching without intervening guard check)
   2. PRB-E303: Unmanaged Resource Handle Leak (Variable assigned from open()
      or socket() not wrapped in context manager and missing close() call)
   3. PRB-E109: Cross-statement Global State Mutation Taint
 
+Supports assert nullability guards, early return exits, and dictionary indexing subscripts.
 Zero external dependencies. Sub-10ms evaluation.
 """
 
@@ -102,12 +103,29 @@ class DefUseAnalyzer(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_If(self, node: ast.If):
-        # Check if the if-condition guards a nullable variable
+        # 1. Positive guard: if x: or if x is not None:
         guarded_vars = self._extract_guarded_vars(node.test)
         for gv in guarded_vars:
             if gv in self.current_scope:
                 self.current_scope[gv].has_null_guard = True
 
+        # 2. Early exit guard: if x is None: return / raise
+        if isinstance(node.test, ast.Compare):
+            if len(node.test.ops) == 1 and isinstance(node.test.ops[0], (ast.Is, ast.Eq)):
+                if isinstance(node.test.left, ast.Name) and isinstance(node.test.comparators[0], ast.Constant) and node.test.comparators[0].value is None:
+                    var_name = node.test.left.id
+                    if any(isinstance(stmt, (ast.Return, ast.Raise)) for stmt in node.body):
+                        if var_name in self.current_scope:
+                            self.current_scope[var_name].has_null_guard = True
+
+        self.generic_visit(node)
+
+    def visit_Assert(self, node: ast.Assert):
+        # assert x is not None or assert x
+        guarded_vars = self._extract_guarded_vars(node.test)
+        for gv in guarded_vars:
+            if gv in self.current_scope:
+                self.current_scope[gv].has_null_guard = True
         self.generic_visit(node)
 
     def visit_Attribute(self, node: ast.Attribute):
@@ -125,6 +143,25 @@ class DefUseAnalyzer(ast.NodeVisitor):
                         variable_name=var_name,
                         message=f"Dereferencing attribute '{node.attr}' on variable '{var_name}' defined as nullable at line {var_def.lineno} without a null check.",
                         remediation_suggestion=f"Guard '{var_name}' with 'if {var_name} is not None:' before accessing '.{node.attr}'."
+                    ))
+
+        self.generic_visit(node)
+
+    def visit_Subscript(self, node: ast.Subscript):
+        # If subscript indexing on a nullable variable (e.g., x['key'] or x[0])
+        if isinstance(node.value, ast.Name):
+            var_name = node.value.id
+            if var_name in self.current_scope:
+                var_def = self.current_scope[var_name]
+                if var_def.is_nullable and not var_def.has_null_guard:
+                    self.findings.append(DataflowFinding(
+                        code="PRB-E202",
+                        name="Silent Nullability & Type Confusion (Subscript Def-Use Chain)",
+                        file_path=self.file_path,
+                        line_number=node.lineno,
+                        variable_name=var_name,
+                        message=f"Indexing subscript on variable '{var_name}' defined as nullable at line {var_def.lineno} without a null check.",
+                        remediation_suggestion=f"Guard '{var_name}' with 'if {var_name} is not None:' before subscript indexing."
                     ))
 
         self.generic_visit(node)
@@ -163,8 +200,8 @@ class DefUseAnalyzer(ast.NodeVisitor):
         if isinstance(test_expr, ast.Name):
             guarded.add(test_expr.id)
         elif isinstance(test_expr, ast.Compare):
-            # x is not None
-            if len(test_expr.ops) == 1 and isinstance(test_expr.ops[0], ast.IsNot):
+            # x is not None or x != None
+            if len(test_expr.ops) == 1 and isinstance(test_expr.ops[0], (ast.IsNot, ast.NotEq)):
                 if isinstance(test_expr.left, ast.Name) and isinstance(test_expr.comparators[0], ast.Constant) and test_expr.comparators[0].value is None:
                     guarded.add(test_expr.left.id)
         elif isinstance(test_expr, ast.BoolOp) and isinstance(test_expr.op, ast.And):

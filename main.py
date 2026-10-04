@@ -378,12 +378,18 @@ def cmd_judge(args) -> int:
 
 def cmd_dogfood(args) -> int:
     """Executes bidirectional self-audit on current active dialogue and latest code mutations."""
+    import time
     from engine.transcript_ingestor import TranscriptIngestor
     from engine.context_distiller_bridge import ContextDistillerBridge
-    from engine.tri_sieve_oracle import TriSieveOracle
+    from engine.ast_interceptor import audit_source_code
+    from engine.dialogue_oracle import DialogueOracle
+    from engine.temporal_constraint_ledger import TemporalConstraintLedger
+    from engine.def_use_tracker import analyze_dataflow
+
+    start_total_time = time.perf_counter()
 
     print("==========================================================================")
-    print("  🐕 [DOGFOODING] 启动项目双向互检：对当前会话进行全阶真实性与代码终审")
+    print("  🐕 [DOGFOODING] 启动项目双向互检：全阶多轮时序回放与全量突变代码终审")
     print("==========================================================================")
 
     ingestor = TranscriptIngestor()
@@ -396,56 +402,107 @@ def cmd_dogfood(args) -> int:
     bridge = ContextDistillerBridge()
     causal_slice = bridge.distill_tri_anchor_slice(events)
 
-    print(f"  1. 转录本探测定位: {transcript_path}")
-    print(f"  2. 全局多轮时序回放 (Full Trajectory Replay - 对标 agent-replay & auditable):")
-    print(f"     • 历史事件总数: 共 {len(events)} 个 (包含 {causal_slice.user_turns_count} 轮用户诉求, {causal_slice.history_errors_count} 次历史命令报错/异常)")
-    print(f"     • 全阶时序演化: 覆盖全量 {causal_slice.user_turns_count} 轮历史用户约束链注入与状态追踪")
-    print(f"  3. 当前回合因果切片与触碰文件:")
-    print(f"     • 用户最新需求: {causal_slice.user_intent[:100]}...")
-    if causal_slice.mutated_files:
-        print(f"     • 触碰修改文件: {causal_slice.mutated_files}")
-    else:
-        print(f"     • 触碰修改文件: [] (只读问答/指令交互，未触碰代码文件)")
+    print(f"  1. 转录本定位: {transcript_path}")
+    print(f"  2. 全阶多轮时序回放 (Full Trajectory Replay - 对标 AgentBench & SWE-bench):")
+    print(f"     • 历史事件总数: 共 {len(events)} 个 (包含 {len(causal_slice.all_turns)} 轮用户诉求, {causal_slice.history_errors_count} 次工具报错/异常)")
+    print(f"     • 历史用户交互轮次: {len(causal_slice.all_turns)} 轮")
+    print(f"     • 全会话突变文件总数: {len(causal_slice.session_mutated_files)} 个")
     print(f"     • Token因果提纯: 减负 {causal_slice.compression_ratio}%")
-
-    # Read latest mutated file code (strictly from causal mutations, never sneakily self-substitute)
-    sample_code = ""
-    target_f = ""
-    if causal_slice.mutated_files:
-        for mf in causal_slice.mutated_files:
-            p = Path(mf)
-            if p.exists() and p.is_file():
-                target_f = str(p.resolve())
-                sample_code = p.read_text(encoding="utf-8", errors="replace")
-                break
-        if not target_f:
-            target_f = causal_slice.mutated_files[0]
-
-    oracle = TriSieveOracle()
-    verdict = oracle.judge_mutation(sample_code, causal_slice=causal_slice, file_path=target_f or "session_audit")
-
     print("-" * 74)
-    print(f"  4. 三阶裁判网格对当前对话与代码执行终审:")
-    if not sample_code and not causal_slice.mutated_files:
-        print(f"     • 滤网 1 (AST 反作弊)     : ⚪ 免检通过 (会话未产生代码突变，无假测试)")
-        print(f"     • 滤网 2 (代数蜕变神谕)   : ⚪ 免检通过 (无待测代码，无需变异验证)")
+
+    # ---------------------------------------------------------
+    # Track 1: Multi-Turn Trajectory Invariant Audit (Turns 1..N)
+    # ---------------------------------------------------------
+    print(f"  3. 逐轮时序神谕与反欺骗审查 (Multi-Turn Trajectory Oracle):")
+    dialogue_oracle = DialogueOracle()
+    temporal_ledger = TemporalConstraintLedger()
+    trajectory_findings = []
+
+    for turn in causal_slice.all_turns:
+        temporal_ledger.feed_turn(turn.turn_index, turn.user_intent)
+
+        d_findings = dialogue_oracle.audit_trajectory(
+            user_intent=turn.user_intent,
+            reasoning_claims=turn.reasoning_claims,
+            action_calls=turn.action_calls,
+            action_results=turn.action_results
+        )
+        for df in d_findings:
+            trajectory_findings.append((turn.turn_index, df))
+
+    if not trajectory_findings:
+        print(f"     • 多轮时序审查结果: ✅ 全部 {len(causal_slice.all_turns)} 轮推理-行动因果链完全一致 (无伪造验证、无非法工具入参)")
     else:
-        print(f"     • 滤网 1 (AST 反作弊)     : {'✅ 通过' if verdict.sieve1_pass else '❌ 拦截'}")
-        if verdict.sieve1_findings:
-            for f in verdict.sieve1_findings:
-                print(f"       ⚠️ {f}")
-        print(f"     • 滤网 2 (代数蜕变神谕)   : {'✅ 通过' if verdict.sieve2_pass else '❌ 破损'}")
-        if verdict.sieve2_violations:
-            for v in verdict.sieve2_violations:
-                print(f"       ⚠️ {v}")
-    print(f"     • 滤网 3 (思维链与时序账本) : {'✅ 通过' if verdict.sieve3_pass else '❌ 虚假'}")
-    if verdict.sieve3_discrepancies:
-        for d in verdict.sieve3_discrepancies:
-            print(f"       ⚠️ {d}")
-    print(f"     • 终审裁决状态            : {'✅ 100% 真实有效 (COMMITTED)' if verdict.is_valid else '❌ 违规打回 (ROLLED_BACK)'}")
-    print(f"     • 裁决总耗时              : {verdict.elapsed_ms:.2f} ms")
+        print(f"     • 多轮时序审查结果: ⚠️ 发现 {len(trajectory_findings)} 处时序因果背离:")
+        for t_idx, df in trajectory_findings:
+            print(f"       ⚠️ [Turn {t_idx}] [{df.code}] {df.name}: {df.message}")
+
+    # ---------------------------------------------------------
+    # Track 2: Mutated Files AST & Dataflow Invariant Audit
+    # ---------------------------------------------------------
+    print("-" * 74)
+    print(f"  4. 全量突变文件静态 AST 与数据流终审 (All Mutated Files Audit):")
+
+    py_files_to_audit = []
+    other_mutated = []
+    for mf in causal_slice.session_mutated_files:
+        p = Path(mf)
+        if p.exists() and p.is_file():
+            if p.suffix.lower() == ".py":
+                py_files_to_audit.append(p)
+            else:
+                other_mutated.append(p)
+
+    print(f"     • 待审 Python 源码: {len(py_files_to_audit)} 个文件")
+    print(f"     • 其它非代码资产: {len(other_mutated)} 个 (Markdown/Shell/Config)")
+
+    code_findings_by_file = {}
+    for py_p in py_files_to_audit:
+        try:
+            content = py_p.read_text(encoding="utf-8", errors="replace")
+            ast_res = audit_source_code(content, file_path=str(py_p))
+            df_res = analyze_dataflow(content, file_path=str(py_p))
+
+            combined = []
+            for f in ast_res:
+                combined.append(f"[{f.code}] {f.name} (L{f.line_number}): {f.message}")
+            for d in df_res:
+                combined.append(f"[{d.code}] {d.name} (L{d.line_number}): {d.message}")
+            if combined:
+                code_findings_by_file[str(py_p)] = combined
+        except Exception as e:
+            code_findings_by_file[str(py_p)] = [f"[PRB-E003] Failed to parse: {e}"]
+
+    total_code_pathologies = sum(len(fl) for fl in code_findings_by_file.values())
+    if total_code_pathologies == 0:
+        print(f"     • 代码静态审查结果: ✅ {len(py_files_to_audit)} 个 Python 突变文件完全符合 32 项病理门禁 (零异常吞噬、零空值链式解引用、零死锁风险)")
+    else:
+        print(f"     • 代码静态审查结果: ⚠️ 在 {len(code_findings_by_file)} 个文件中检测到 {total_code_pathologies} 个潜在代码缺陷/反模式:")
+        for fpath, flist in list(code_findings_by_file.items())[:10]:
+            print(f"       📄 {fpath}:")
+            for item in flist[:5]:
+                print(f"          - {item}")
+            if len(flist) > 5:
+                print(f"          ... 还有 {len(flist) - 5} 项未展开")
+        if len(code_findings_by_file) > 10:
+            print(f"       ... 共有 {len(code_findings_by_file)} 个文件存在问题")
+
+    # ---------------------------------------------------------
+    # Track 3: Final Synthesis Verdict
+    # ---------------------------------------------------------
+    elapsed_total_ms = (time.perf_counter() - start_total_time) * 1000.0
+    is_valid = (len(trajectory_findings) == 0) and (total_code_pathologies == 0)
+
+    print("=" * 74)
+    print(f"  5. 综合终审裁决状态:")
+    if is_valid:
+        print(f"     • 裁决结果: ✅ 100% 真实有效 (COMMITTED) - 零时序虚假、零代码病理")
+    else:
+        print(f"     • 裁决结果: ⚠️ 需要整改 (REMEDIATION_REQUIRED)")
+        print(f"     • 详细摘要: 时序虚假 {len(trajectory_findings)} 处 | 代码病理 {total_code_pathologies} 处 (分布在 {len(code_findings_by_file)} 个文件中)")
+    print(f"     • 全阶审查总耗时: {elapsed_total_ms:.2f} ms (真实全量回放，拒绝虚假毫秒免检)")
     print("==========================================================================")
-    return 0 if verdict.is_valid else 1
+    return 0 if is_valid else 1
 
 
 def cmd_preflight(args) -> int:
